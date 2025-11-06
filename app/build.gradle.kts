@@ -7,6 +7,7 @@
 // • MinSdk 26 / TargetSdk 36 / Java 17 toolchain
 // • WorkManager + Orchestrator + MediaPipe Tasks supported
 // • Deterministic CI builds (no timestamp variance)
+// • 🔒 Always sign with DEBUG keystore (release も固定)
 // ============================================================
 
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -21,7 +22,7 @@ plugins {
 
 android {
     // ------------------------------------------------------------
-    // 🔧 Load local.properties once for tokens/configs
+    // 🔧 Load local.properties
     // ------------------------------------------------------------
     val localProps = Properties().apply {
         val f = rootProject.file("local.properties")
@@ -37,7 +38,7 @@ android {
     fun quote(v: String) = "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     // ------------------------------------------------------------
-    // 🏷️ Core App Identity
+    // 🏷️ App Identity
     // ------------------------------------------------------------
     val appId = prop("appId", "com.negi.androidslm")
 
@@ -56,82 +57,90 @@ android {
         testInstrumentationRunnerArguments["useTestStorageService"] = "true"
     }
 
+    // ------------------------------------------------------------
+    // 🔐 Signing（常に debug 署名）
+    // ------------------------------------------------------------
     signingConfigs {
-        create("release") {
-            storeFile = file("keystore/release.jks")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "password"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "release"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "password"
-        }
+        getByName("debug")
     }
 
+    // ------------------------------------------------------------
+    // 🧱 Build Types
+    // ------------------------------------------------------------
     buildTypes {
         debug {
             isDebuggable = true
             isMinifyEnabled = false
-            buildConfigField("String", "GH_OWNER", quote(prop("gh.owner")))
-            buildConfigField("String", "GH_REPO", quote(prop("gh.repo")))
-            buildConfigField("String", "GH_BRANCH", quote(prop("gh.branch", "main")))
+            buildConfigField("String", "GH_OWNER",       quote(prop("gh.owner")))
+            buildConfigField("String", "GH_REPO",        quote(prop("gh.repo")))
+            buildConfigField("String", "GH_BRANCH",      quote(prop("gh.branch", "main")))
             buildConfigField("String", "GH_PATH_PREFIX", quote(prop("gh.pathPrefix", "exports")))
-            buildConfigField("String", "GH_TOKEN", quote(prop("gh.token")))
-            buildConfigField("String", "HF_TOKEN", quote(prop("HF_TOKEN")))
+            buildConfigField("String", "GH_TOKEN",       quote(prop("gh.token")))
+            buildConfigField("String", "HF_TOKEN",       quote(prop("HF_TOKEN")))
         }
+
+        // 🔒 release も常に debug 署名
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            // ✅ Use debug signing in CI/dev environments
             signingConfig = signingConfigs.getByName("debug")
+            println("🔁 [buildTypes.release] Always using DEBUG signing for RELEASE build.")
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            buildConfigField("String", "GH_OWNER", quote(prop("gh.owner")))
-            buildConfigField("String", "GH_REPO", quote(prop("gh.repo")))
-            buildConfigField("String", "GH_BRANCH", quote(prop("gh.branch", "main")))
+
+            buildConfigField("String", "GH_OWNER",       quote(prop("gh.owner")))
+            buildConfigField("String", "GH_REPO",        quote(prop("gh.repo")))
+            buildConfigField("String", "GH_BRANCH",      quote(prop("gh.branch", "main")))
             buildConfigField("String", "GH_PATH_PREFIX", quote(prop("gh.pathPrefix", "exports")))
-            buildConfigField("String", "GH_TOKEN", quote(prop("gh.token")))
-            buildConfigField("String", "HF_TOKEN", quote(prop("HF_TOKEN")))
+            buildConfigField("String", "GH_TOKEN",       quote(prop("gh.token")))
+            buildConfigField("String", "HF_TOKEN",       quote(prop("HF_TOKEN")))
         }
     }
 
+    // ------------------------------------------------------------
+    // ⚙️ Java/Kotlin
+    // ------------------------------------------------------------
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
 
-    // ============================================================
-    // 🧠 Kotlin Compiler Options — Updated for 2.2.21+
-    // ============================================================
+    // 🧠 Kotlin Compiler Options — 2.2.21+
     kotlin {
         compilerOptions {
             jvmTarget = JvmTarget.JVM_17
             freeCompilerArgs.addAll(
                 listOf(
                     "-opt-in=kotlin.RequiresOptIn",
-                    "-Xcontext-parameters",                // ✅ replaces -Xcontext-receivers
-                    "-Xannotation-default-target=param-property", // ✅ fixes annotation warning
+                    "-Xcontext-parameters",                // replaces -Xcontext-receivers
+                    "-Xannotation-default-target=param-property",
                     "-Xjsr305=strict"
                 )
             )
         }
     }
 
+    // 🧩 Compose
     buildFeatures {
         compose = true
         buildConfig = true
     }
-
     composeOptions {
         kotlinCompilerExtensionVersion = "2.2.21"
     }
 
+    // 🧪 Test / Orchestrator
     testBuildType = "debug"
     testOptions {
         execution = "ANDROIDX_TEST_ORCHESTRATOR"
         animationsDisabled = true
     }
 
+    // 📦 Packaging
     packaging {
         resources {
             excludes += setOf(
@@ -146,6 +155,7 @@ android {
         }
     }
 
+    // 🧹 Lint
     lint {
         abortOnError = false
         checkReleaseBuilds = false
@@ -155,7 +165,7 @@ android {
 }
 
 // ============================================================
-// 🔁 Deterministic build outputs (timestamp off, order fixed)
+// 🔁 Deterministic outputs
 // ============================================================
 tasks.withType<org.gradle.api.tasks.bundling.AbstractArchiveTask>().configureEach {
     isPreserveFileTimestamps = false
@@ -182,7 +192,6 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.compose.foundation.layout)
-
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 

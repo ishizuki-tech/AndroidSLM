@@ -1,22 +1,13 @@
 # .github/workflows/AndroidBuild.yml
 # ============================================================
-# 🚀 AndroidSLM — Smart Build + Release + Wiki + Pages (No Model)
-# ------------------------------------------------------------
-# - Trigger: tag push (v*) or manual dispatch
-# - Smart change detection (skip build unless forced or tag push)
-# - Build Debug/Release (APK + AAB for release), optional signing via secrets
-# - Create GitHub Release and upload artifacts
-# - Update Wiki (Home + Build page) and GH Pages (gh-pages) — NO MODEL SECTIONS
-# - 🔎 Diagnostics: rich logs + Gradle/Kotlin tail dump on failure
-# - 🧵 Concurrency + ⏱️ Timeouts
+# 🚀 AndroidSLM — Build + Release + Wiki + Pages (Always Debug Signing)
 # ============================================================
 
-name: AndroidSLM — Build+Release+Wiki+Pages (No Model)
+name: AndroidSLM — Build+Release+Wiki+Pages (Debug-Signed)
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       enable_review:
@@ -37,7 +28,7 @@ on:
         default: true
         type: boolean
       build_type:
-        description: "Variant (auto → release if signing available, else debug)"
+        description: "Variant (auto = release (debug-signed))"
         required: false
         default: "auto"
         type: choice
@@ -64,7 +55,6 @@ env:
   NDK_VERSION: 28.1.13356709
   _JAVA_OPTIONS: "-Xmx4g"
   GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=true"
-  ORG_GRADLE_PROJECT_kotlin_compiler_execution_strategy: in-process
 
 jobs:
   # ============================================================
@@ -94,7 +84,7 @@ jobs:
           if [ -n "$CHANGED" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
 
   # ============================================================
-  # 🏗️ Build + GitHub Release
+  # 🏗️ Build + GitHub Release (Always Debug-Signed)
   # ============================================================
   build:
     name: Build & Release
@@ -105,6 +95,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       variant: ${{ steps.build.outputs.variant }}
+      signing: ${{ steps.build.outputs.signing }}
     steps:
       - name: 🧰 Checkout
         uses: actions/checkout@v4
@@ -139,52 +130,26 @@ jobs:
       - name: 🧾 Ensure gradlew is executable
         run: chmod +x ./gradlew
 
-      - name: 🔐 Prepare release keystore (if secrets exist)
-        id: ks
-        run: |
-          set -e
-          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
-            mkdir -p app/keystore
-            echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > app/keystore/release.jks
-            echo "USE_RELEASE_KEYSTORE=true" >> $GITHUB_ENV
-            echo "keystore_ready=true" >> $GITHUB_OUTPUT
-            echo "::notice::Release keystore prepared (app/keystore/release.jks)"
-          else
-            echo "keystore_ready=false" >> $GITHUB_OUTPUT
-            echo "::notice::No ANDROID_KEYSTORE_B64 → release signing unavailable; auto-mode will pick 'debug'."
-          fi
-
       - name: 🧪 Lint & Unit tests (optional)
         if: ${{ inputs.enable_review == true || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
         run: |
           ./gradlew --console=plain --info --stacktrace --no-daemon lintDebug testDebugUnitTest || \
             echo "::warning::Lint/Tests failed (continuing)"
 
-      - name: 🏗️ Build (auto→release if signing ready; manual release requires signing) + Diagnostics
+      - name: 🏗️ Build (release is debug-signed) + Diagnostics
         id: build
         run: |
           set -e
           VARIANT="${{ inputs.build_type }}"
-          KEYSTORE_READY="${{ steps.ks.outputs.keystore_ready }}"
-          if [ "$VARIANT" = "auto" ]; then
-            if [ "$KEYSTORE_READY" = "true" ]; then VARIANT="release"; else VARIANT="debug"; fi
-          fi
-          echo "Chosen variant: $VARIANT (keystore_ready=$KEYSTORE_READY)"
-
-          # 手動で release 指定だが keystore 無し → 明示的に失敗させて理由を出す
-          if [ "$VARIANT" = "release" ] && [ "$KEYSTORE_READY" != "true" ]; then
-            echo "::error::'build_type=release' requested but no signing keystore (ANDROID_KEYSTORE_B64) provided."
-            exit 2
-          fi
+          if [ "$VARIANT" = "auto" ]; then VARIANT="release"; fi   # 常に release を優先（中身は debug 署名）
+          echo "Chosen variant: $VARIANT (signing=debug)"
 
           export _JAVA_OPTIONS="-Xmx4g"
           export GRADLE_OPTS="-Xmx4g -Dorg.gradle.daemon=false"
 
+          # ※ app/build.gradle.kts 側で「release = signingConfigs.debug」にしてあることが前提
           set +e
           if [ "$VARIANT" = "release" ]; then
-            echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
             ./gradlew --console=plain --info --stacktrace :app:clean :app:assembleRelease :app:bundleRelease
             STATUS=$?
             APK_PATH="app/build/outputs/apk/release/app-release.apk"
@@ -199,7 +164,6 @@ jobs:
           fi
           set -e
 
-          # 失敗時ログ収集
           if [ $STATUS -ne 0 ]; then
             echo "❌ Gradle build failed. Dumping daemon/Kotlin logs..."
             mkdir -p diag
@@ -213,32 +177,13 @@ jobs:
             exit $STATUS
           fi
 
-          # 成果物の存在チェック + 出力
-          if [ -f "$APK_PATH" ]; then echo "apk=$APK_PATH" >> $GITHUB_OUTPUT; else echo "::error::APK missing: $APK_PATH"; exit 3; fi
+          test -f "$APK_PATH" || (echo "::error::APK missing: $APK_PATH" && exit 3)
+          echo "apk=$APK_PATH" >> $GITHUB_OUTPUT
           if [ -n "$AAB_PATH" ] && [ -f "$AAB_PATH" ]; then echo "aab=$AAB_PATH" >> $GITHUB_OUTPUT; fi
           if [ -n "$MAP_PATH" ] && [ -f "$MAP_PATH" ]; then echo "mapping=$MAP_PATH" >> $GITHUB_OUTPUT; fi
           echo "variant=$VARIANT" >> $GITHUB_OUTPUT
-          echo "::notice::Build success → APK=$(basename "$APK_PATH") AAB=$(basename "$AAB_PATH" 2>/dev/null || echo '-')"
-
-      - name: 📦 Upload diagnostics (if any)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: diagnostics
-          path: diag
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: ⬆️ Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: AndroidSLM-${{ steps.build.outputs.variant }}-artifacts
-          path: |
-            ${{ steps.build.outputs.apk }}
-            ${{ steps.build.outputs.aab }}
-            ${{ steps.build.outputs.mapping }}
-          if-no-files-found: ignore
-          retention-days: 21
+          echo "signing=debug" >> $GITHUB_OUTPUT
+          echo "::notice::Build success → variant=$VARIANT, signing=debug, APK=$(basename "$APK_PATH"), AAB=$(basename "$AAB_PATH" 2>/dev/null || echo '-')"
 
       - name: 🏷️ Derive version tag
         id: tag
@@ -260,7 +205,7 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Release tag: $TAG"
 
-      - name: 📰 Release notes (no model section)
+      - name: 📰 Release notes (debug signing)
         id: notes
         run: |
           set -e
@@ -273,9 +218,13 @@ jobs:
             echo ""
             echo "- Tag: \`${{ steps.tag.outputs.tag }}\`"
             echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Signing: \`debug\` (release variant is debug-signed)"
             echo "- APK: \`$(basename "$APK")\`"
             if [ -n "$AAB" ]; then echo "- AAB: \`$(basename "$AAB")\`"; fi
             if [ -n "$MAP" ]; then echo "- ProGuard mapping: \`$(basename "$MAP")\`"; fi
+            echo ""
+            echo "> ⚠️ This build is signed with the DEBUG keystore."
+            echo "> Not suitable for Play upload; for internal distribution/testing."
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
@@ -295,7 +244,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================================
-  # 🚀 Publish Wiki + GH Pages (No Model)
+  # 🚀 Publish Wiki + GH Pages (No Model sections)
   # ============================================================
   publish:
     name: Publish Wiki + Pages
@@ -326,7 +275,7 @@ jobs:
           echo "repo=$REPO" >> $GITHUB_OUTPUT
           echo "base=$BASE_URL" >> $GITHUB_OUTPUT
 
-      - name: 🌈 Generate Wiki (Home + Build page) — No Model
+      - name: 🌈 Generate Wiki (Home + Build page)
         run: |
           set -e
           TAG="${{ steps.info.outputs.tag }}"
@@ -342,6 +291,8 @@ jobs:
             echo "## ⬇️ Download"
             echo "- [APK (latest release)](https://github.com/${REPO}/releases/latest/download/app-release.apk)"
             echo "- [Releases](https://github.com/${REPO}/releases)"
+            echo ""
+            echo "> Signing: debug (release variant is debug-signed)"
           } > "wiki/Builds/${TAG}.md"
 
           {
@@ -351,16 +302,13 @@ jobs:
             echo "## 📜 Build History (latest 20)"
           } > wiki/Home.md
 
-          MAP_TMP="wiki/_link-map.txt"
-          : > "$MAP_TMP"
-
+          MAP_TMP="wiki/_link-map.txt"; : > "$MAP_TMP"
           LIST=$(find wiki/Builds -type f -name '*.md' | sort -r | head -n 20 || true)
           if [ -z "$LIST" ]; then
             echo "_No builds yet._" >> wiki/Home.md
           else
             echo "$LIST" | while read -r f; do
-              rel="${f#wiki/}"
-              name="${rel%.md}"
+              rel="${f#wiki/}"; name="${rel%.md}"
               slug="$(printf '%s' "$name" | sed -E 's/[[:space:]]+/-/g; s@/@-@g; s/-+/-/g')"
               printf -- "- [%s](https://github.com/%s/wiki/%s)\n" "$name" "$REPO" "$slug" >> wiki/Home.md
               printf -- "%s -> %s\n" "$name" "$slug" >> "$MAP_TMP"
@@ -393,14 +341,13 @@ jobs:
           git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${REPO}.wiki.git"
           git push origin master --force
 
-      - name: 💎 Generate GH Pages (Glass UI) — No Model
+      - name: 💎 Generate GH Pages (Glass UI)
         run: |
           set -euo pipefail
           TAG="${{ steps.info.outputs.tag }}"
           DATE="${{ steps.info.outputs.date }}"
           REPO="${{ steps.info.outputs.repo }}"
           BASE_URL="${{ steps.info.outputs.base }}"
-
           mkdir -p gh-pages
           cat > gh-pages/index.html <<HTML
           <!doctype html><html lang="en"><head>
