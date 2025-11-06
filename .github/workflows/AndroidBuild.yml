@@ -304,20 +304,43 @@ jobs:
             echo "## 📜 Build History (latest 20)"
           } > wiki/Home.md
 
-          MAP_TMP="wiki/_link-map.txt"; : > "$MAP_TMP"
-          LIST=$(find wiki/Builds -type f -name '*.md' | sort -r | head -n 20 || true)
+          # Build 一覧リンク生成 + デバッグ
+          MAP_TMP="wiki/_link-map.txt"
+          : > "$MAP_TMP"
+
+          # Home.md 自身以外の .md をビルドページとして扱う（例: wiki/v1.0-xxxx.md）
+          LIST=$(find wiki -maxdepth 1 -type f -name '*.md' ! -name 'Home.md' | sort -r | head -n 20 || true)
 
           if [ -z "$LIST" ]; then
             echo "_No builds yet._" >> wiki/Home.md
           else
             echo "$LIST" | while read -r f; do
-              rel="${f#wiki/}"                # → "Builds/v1.0-xxx.md"
-              name="${rel%.md}"              # → "Builds/v1.0-xxx"
-              slug="$(printf '%s' "$name" | sed -E 's@[[:space:]]+@-@g; s@/@-@g; s/-+/-/g')"  # → "Builds-v1.0-xxx"
-              printf -- "- [%s](https://github.com/%s/wiki/%s)\n" "$name" "$REPO" "$slug" >> wiki/Home.md
-              printf -- "%s -> %s\n" "$name" "$slug" >> "$MAP_TMP"
+              base="$(basename "$f" .md)"  # 例: v1.0-aee3b8a
+              # 念のため slug 正規化（空白や / があっても安全にする）
+              slug="$(printf '%s' "$base" | sed -E 's@[[:space:]]+@-@g; s@/@-@g; s/-+/-/g')"
+              printf -- "- [%s](https://github.com/%s/wiki/%s)\n" "$base" "$REPO" "$slug" >> wiki/Home.md
+              printf -- "%s.md -> %s\n" "$base.md" "$slug" >> "$MAP_TMP"
             done
           fi
+
+          echo "" >> wiki/Home.md
+          {
+            echo "## 🌐 GH Pages"
+            echo "- [Downloads Page](${BASE_URL})"
+            echo ""
+            echo "## 📱 QR (GH Pages)"
+            echo "<p align='center'><img src='https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${BASE_URL}' width='180'></p>"
+          } >> wiki/Home.md
+
+          # デバッグ出力：生成された Wiki 構造とリンクマップ
+          echo "::group::Wiki tree"
+          ls -R wiki || true
+          echo "::endgroup::"
+
+          echo "::group::Wiki link map (file -> slug)"
+          cat "$MAP_TMP" || echo "no build pages"
+          echo "::endgroup::"
+
 
           echo "" >> wiki/Home.md
           {
