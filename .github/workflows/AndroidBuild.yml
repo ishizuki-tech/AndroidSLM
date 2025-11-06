@@ -8,9 +8,7 @@
 # - Create GitHub Release and upload artifacts
 # - Update Wiki (Home + Build page) and GH Pages (gh-pages) — NO MODEL SECTIONS
 # - 🔎 Diagnostics: rich logs + Gradle/Kotlin tail dump on failure
-# ------------------------------------------------------------
-# Optional repo secrets for release signing:
-#   ANDROID_KEYSTORE_B64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+# - 🧵 Concurrency + ⏱️ Timeouts
 # ============================================================
 
 name: AndroidSLM — Build+Release+Wiki+Pages (No Model)
@@ -49,6 +47,11 @@ permissions:
   contents: write
   pages: write
 
+# 同一 ref で並走中の古い実行をキャンセル
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     shell: bash
@@ -62,6 +65,8 @@ env:
   NDK_VERSION: 28.1.13356709
   _JAVA_OPTIONS: "-Xmx4g"
   GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=true"
+  # 🟢 Gradle の -P に相当（ドットは使えないのでアンダースコア）
+  ORG_GRADLE_PROJECT_kotlin_compiler_execution_strategy: in-process
 
 jobs:
   # ============================================================
@@ -70,6 +75,7 @@ jobs:
   detect:
     name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
     steps:
@@ -95,6 +101,7 @@ jobs:
   build:
     name: Build & Release
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: detect
     if: ${{ needs.detect.outputs.changed == 'true' || inputs.force_build == true || startsWith(github.ref, 'refs/tags/') }}
     outputs:
@@ -113,6 +120,9 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
           cache: gradle
+
+      - name: 🧱 Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
       - name: 🛠️ Setup Android (sdk/ndk)
         uses: android-actions/setup-android@v3
@@ -154,8 +164,7 @@ jobs:
           fi
           echo "Chosen variant: $VARIANT"
 
-          # Kotlin を in-process 実行（詳細ログ/スタックトレースが明瞭）
-          export ORG_GRADLE_PROJECT_kotlin.compiler.execution.strategy=in-process
+          # Daemon OFF = クリーンな in-process Kotlin コンパイルを優先
           export _JAVA_OPTIONS="-Xmx4g"
           export GRADLE_OPTS="-Xmx4g -Dorg.gradle.daemon=false"
 
@@ -178,7 +187,7 @@ jobs:
           fi
           set -e
 
-          # 失敗時のログ収集
+          # 失敗時ログ収集
           if [ $STATUS -ne 0 ]; then
             echo "❌ Gradle build failed. Dumping daemon/Kotlin logs..."
             mkdir -p diag
@@ -278,6 +287,7 @@ jobs:
   publish:
     name: Publish Wiki + Pages
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [build, detect]
     if: always()
     steps:
