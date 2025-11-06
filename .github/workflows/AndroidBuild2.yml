@@ -205,28 +205,6 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Release tag: $TAG"
 
-      - name: ♻️ Normalize APK filenames (AndroidSLM-*.apk)
-        id: alias
-        run: |
-          set -e
-          APK="${{ steps.build.outputs.apk }}"
-          TAG="${{ steps.tag.outputs.tag }}"
-          mkdir -p publish
-
-          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-            echo "❌ APK not found at $APK"
-            exit 1
-          fi
-
-          # Tag 固有版 & latest 共通版を作成
-          cp "$APK" "publish/AndroidSLM-${TAG}.apk"
-          cp "$APK" "publish/AndroidSLM-latest.apk"
-
-          ls -lh "$APK" publish || true
-
-          echo "apk_tag=publish/AndroidSLM-${TAG}.apk" >> $GITHUB_OUTPUT
-          echo "apk_latest=publish/AndroidSLM-latest.apk" >> $GITHUB_OUTPUT
-
       - name: 📰 Release notes (debug signing)
         id: notes
         run: |
@@ -250,19 +228,6 @@ jobs:
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
-      - name: ⬆️ Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: AndroidSLM-${{ steps.build.outputs.variant }}-artifacts
-          path: |
-            ${{ steps.build.outputs.apk }}
-            ${{ steps.build.outputs.aab }}
-            ${{ steps.build.outputs.mapping }}
-            ${{ steps.alias.outputs.apk_tag }}
-            ${{ steps.alias.outputs.apk_latest }}
-          if-no-files-found: ignore
-          retention-days: 21
-
       - name: 🏁 Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -272,8 +237,6 @@ jobs:
           prerelease: ${{ inputs.prerelease }}
           draft: false
           files: |
-            ${{ steps.alias.outputs.apk_tag }}
-            ${{ steps.alias.outputs.apk_latest }}
             ${{ steps.build.outputs.apk }}
             ${{ steps.build.outputs.aab }}
             ${{ steps.build.outputs.mapping }}
@@ -352,9 +315,8 @@ jobs:
             echo "Generated: ${DATE}"
             echo ""
             echo "## ⬇️ Download"
-            echo "- [Latest APK](https://github.com/${REPO}/releases/latest/download/AndroidSLM-latest.apk)"
-            echo "- [This tag APK](https://github.com/${REPO}/releases/download/${TAG}/AndroidSLM-${TAG}.apk)"
-            echo "- [All Releases](https://github.com/${REPO}/releases)"
+            echo "- [APK (latest release)](https://github.com/${REPO}/releases/latest/download/app-release.apk)"
+            echo "- [Releases](https://github.com/${REPO}/releases)"
           } > "wiki/${TAG}.md"
 
           # ==========================================
@@ -435,70 +397,63 @@ jobs:
           REPO="${{ steps.info.outputs.repo }}"
           BASE_URL="${{ steps.info.outputs.base }}"
 
-          # ------- Optional: current build info (あれば使う / 無ければ空でOK) -------
+          # ------- Optional: current build info (非必須) -------
           VARIANT="${{ needs.build.outputs.variant }}"
+          SIGNING="${{ needs.build.outputs.signing }}"
           APK_NAME_THIS="${{ needs.build.outputs.apk_name }}"
           AAB_NAME_THIS="${{ needs.build.outputs.aab_name }}"
 
-          # ------- jq が無ければ導入 -------
+          # ------- Require jq -------
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y >/dev/null
-            sudo apt-get install -y jq -y >/dev/null
+            sudo apt-get install -y jq >/dev/null
           fi
 
-          # ------- 最新リリース取得（非 draft 優先 / prerelease は許可） -------
-          if ! curl -fsSL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/releases?per_page=10" \
-              -o releases.json; then
-            echo "::warning::Failed to fetch releases. Falling back to Releases page only."
-            echo "{}" > releases.json
+          # ------- Fetch latest (including prerelease, excluding drafts) -------
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+               -H "Accept: application/vnd.github+json" \
+               "https://api.github.com/repos/${REPO}/releases?per_page=10" \
+               -o releases.json
+
+          # 最新の「draft=false」を1件抽出
+          jq -e '[ .[] | select(.draft==false) ][0]' releases.json >/dev/null || {
+            echo "::warning::No non-draft releases found. Falling back to Releases page."
+            LATEST_TAG=""
+            LATEST_APK_NAME=""
+          }
+
+          if [ -z "${LATEST_TAG:-}" ]; then
+            LATEST_TAG=$(jq -r '[ .[] | select(.draft==false) ][0].tag_name // empty' releases.json)
           fi
 
-          # 最初の非 draft リリース
-          LATEST_TAG="$(jq -r '[ .[] | select(.draft==false) ][0].tag_name // empty' releases.json || echo "")"
-
-          # assets 一覧（名前のみ）
-          ASSETS="$(jq -r '[ .[] | select(.draft==false) ][0].assets[]?.name // empty' releases.json 2>/dev/null || true)"
-
-          echo "::group::Latest release raw info"
-          echo "LATEST_TAG from API : ${LATEST_TAG:-'(none)'}"
-          echo "ASSETS:"
-          printf '%s\n' "${ASSETS:-'(none)'}"
-          echo "::endgroup::"
-
-          # ------- APK / AAB の自動検出ロジック -------
+          # そのリリースの APK 候補一覧（名前）
+          APK_LIST=$(jq -r '[ .[] | select(.draft==false) ][0].assets[]?.name // empty' releases.json | tr -d '\r')
           LATEST_APK_NAME=""
-          LATEST_AAB_NAME=""
-
-          if [ -n "$ASSETS" ]; then
-            # 優先度: AndroidSLM-latest.apk → AndroidSLM-*.apk → app-release.apk → release.*.apk → 最初の *.apk
-            if echo "$ASSETS" | grep -Fxq 'AndroidSLM-latest.apk'; then
-              LATEST_APK_NAME='AndroidSLM-latest.apk'
-            elif echo "$ASSETS" | grep -Eiq '^AndroidSLM-.*\.apk$'; then
-              LATEST_APK_NAME="$(echo "$ASSETS" | grep -Ei '^AndroidSLM-.*\.apk$' | head -n1)"
-            elif echo "$ASSETS" | grep -Fxq 'app-release.apk'; then
+          if [ -n "$APK_LIST" ]; then
+            # 優先度: app-release.apk > /release.*\.apk/i > 任意の *.apk
+            if echo "$APK_LIST" | grep -Fxq 'app-release.apk'; then
               LATEST_APK_NAME='app-release.apk'
-            elif echo "$ASSETS" | grep -Eiq 'release.*\.apk$'; then
-              LATEST_APK_NAME="$(echo "$ASSETS" | grep -Ei 'release.*\.apk$' | head -n1)"
-            elif echo "$ASSETS" | grep -Eq '\.apk$'; then
-              LATEST_APK_NAME="$(echo "$ASSETS" | grep -E '\.apk$' | head -n1)"
-            fi
-
-            # AAB があれば 1つ拾う
-            if echo "$ASSETS" | grep -Eq '\.aab$'; then
-              LATEST_AAB_NAME="$(echo "$ASSETS" | grep -E '\.aab$' | head -n1)"
+            elif echo "$APK_LIST" | grep -Eqi 'release.*\.apk$'; then
+              LATEST_APK_NAME=$(echo "$APK_LIST" | grep -Ei 'release.*\.apk$' | head -n1)
+            elif echo "$APK_LIST" | grep -Eq '\.apk$'; then
+              LATEST_APK_NAME=$(echo "$APK_LIST" | grep -E '\.apk$' | head -n1)
             fi
           fi
 
-          # ------- URL 組み立て（無ければ Releases にフォールバック） -------
+          # URL 組み立て（見つからなければ Releases へフォールバック）
           if [ -n "${LATEST_TAG}" ] && [ -n "${LATEST_APK_NAME}" ]; then
             APK_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_APK_NAME}"
           else
             APK_URL="https://github.com/${REPO}/releases"
           fi
 
+          # AAB もあれば同様に（任意）
+          LATEST_AAB_NAME=""
+          if [ -n "$APK_LIST" ]; then
+            if echo "$APK_LIST" | grep -Eq '\.aab$'; then
+              LATEST_AAB_NAME=$(echo "$APK_LIST" | grep -E '\.aab$' | head -n1)
+            fi
+          fi
           if [ -n "${LATEST_TAG}" ] && [ -n "${LATEST_AAB_NAME}" ]; then
             AAB_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_AAB_NAME}"
           else
@@ -510,12 +465,10 @@ jobs:
           echo "LATEST_APK_NAME : ${LATEST_APK_NAME:-'(none)'}"
           echo "LATEST_AAB_NAME : ${LATEST_AAB_NAME:-'(none)'}"
           echo "APK_URL         : ${APK_URL}"
-          if [ -n "${AAB_URL}" ]; then
-            echo "AAB_URL         : ${AAB_URL}"
-          fi
+          if [ -n "${AAB_URL}" ]; then echo "AAB_URL         : ${AAB_URL}"; fi
           echo "::endgroup::"
 
-          # ------- GH Pages (Glass UI) HTML 出力 -------
+          # ------- Render GH Pages (Glass UI) -------
           mkdir -p gh-pages
           cat > gh-pages/index.html <<HTML
           <!doctype html><html lang="en"><head>
@@ -536,12 +489,13 @@ jobs:
           </style>
           </head>
           <body><div class="wrap"><div class="glass">
-          <h1>📦 AndroidSLM — Latest Downloads</h1>
+          <p><a href="index.html" target=_self title="Separate Page">Go to index</a></p>
+          <h1>📦 AndroidSLM — Latest Download</h1>
           <p class="muted"><strong>Generated:</strong> ${DATE}</p>
 
           <h2>⬇️ Latest Release</h2>
           <p class="row">
-            <a href="${APK_URL}">APK${LATEST_APK_NAME:+ (<code>${LATEST_APK_NAME}</code>)}</a>
+            <a href="${APK_URL}">APK ${LATEST_APK_NAME:+(<code>${LATEST_APK_NAME}</code>)}</a>
             ${AAB_URL:+<a href="${AAB_URL}">AAB (<code>${LATEST_AAB_NAME}</code>)</a>}
           </p>
           <p>
@@ -551,9 +505,9 @@ jobs:
 
           <hr style="border-color:rgba(255,255,255,.15);margin:24px 0">
 
-          <h2>🧪 This Build (if available)</h2>
+          <h2>🧪 This Build (for reference)</h2>
           <p class="muted">
-            <strong>Tag:</strong> ${TAG_THIS} • <strong>Variant:</strong> ${VARIANT:-n/a}
+            <strong>Tag:</strong> ${TAG_THIS} • <strong>Variant:</strong> ${VARIANT:-n/a} • <strong>Signing:</strong> ${SIGNING:-n/a}
           </p>
           <p class="row">
             ${APK_NAME_THIS:+<a href="https://github.com/${REPO}/releases/download/${TAG_THIS}/${APK_NAME_THIS}">This build APK (<code>${APK_NAME_THIS}</code>)</a>}
