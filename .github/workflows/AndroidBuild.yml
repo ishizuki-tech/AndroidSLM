@@ -1,0 +1,356 @@
+# .github/workflows/AndroidBuild.yml
+# ============================================================
+# 🚀 AndroidSLM — Smart Build + Release + Wiki + Pages (No Model)
+# ------------------------------------------------------------
+# - Trigger: tag push (v*) or manual dispatch
+# - Smart change detection (skip build unless forced or tag push)
+# - Build Debug/Release (APK + AAB for release), optional signing via secrets
+# - Create GitHub Release and upload artifacts
+# - Update Wiki (Home + Build page) and GH Pages (gh-pages) — NO MODEL SECTIONS
+# ------------------------------------------------------------
+# Optional repo secrets for release signing:
+#   ANDROID_KEYSTORE_B64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+# ============================================================
+
+name: AndroidSLM — Build+Release+Wiki+Pages (No Model)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      enable_review:
+        description: "Run Lint & Unit Tests before build"
+        type: boolean
+        default: true
+      force_build:
+        description: "Force rebuild regardless of diff detection"
+        type: boolean
+        default: false
+      version_tag:
+        description: "Release tag (empty = auto; tag push = use pushed tag)"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark GitHub Release as prerelease"
+        required: false
+        default: true
+        type: boolean
+      build_type:
+        description: "Variant (auto → release if signing available, else debug)"
+        required: false
+        default: "auto"
+        type: choice
+        options: [auto, release, debug]
+
+permissions:
+  contents: write
+  pages: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  OWNER: ${{ github.repository_owner }}
+  REPO: ${{ github.repository }}     # e.g., ishizuki-tech/AndroidSLM
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  JAVA_VERSION: "17"
+  NDK_VERSION: 28.1.13356709
+  _JAVA_OPTIONS: "-Xmx4g"
+  GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=true"
+
+# ============================================================
+# 🧠 Smart Detect
+# ============================================================
+jobs:
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        run: |
+          set -Eeuo pipefail
+          if [ "${{ inputs.force_build }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED=$(git diff --name-only "$LAST_TAG" HEAD | grep -E '^(app/|nativelib/|gradle/|.*\.(kt|kts|cpp|hpp|h|yaml|yml))' || true)
+          if [ -n "$CHANGED" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+
+  # ============================================================
+  # 🏗️ Build + GitHub Release
+  # ============================================================
+  build:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    needs: detect
+    if: ${{ needs.detect.outputs.changed == 'true' || inputs.force_build == true || startsWith(github.ref, 'refs/tags/') }}
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      variant: ${{ steps.build.outputs.variant }}
+    steps:
+      - name: 🧰 Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: gradle
+
+      - name: 🛠️ Setup Android (sdk/ndk)
+        uses: android-actions/setup-android@v3
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: 📜 Accept Android SDK licenses (best-effort)
+        run: |
+          set -e
+          SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$SDKMANAGER" ]; then yes | "$SDKMANAGER" --licenses || true; fi
+
+      - name: 🔐 Prepare release keystore (if secrets exist)
+        id: ks
+        run: |
+          set -e
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
+            mkdir -p app/keystore
+            echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > app/keystore/release.jks
+            echo "USE_RELEASE_KEYSTORE=true" >> $GITHUB_ENV
+            echo "keystore_ready=true" >> $GITHUB_OUTPUT
+          else
+            echo "keystore_ready=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🧪 Lint & Unit tests (optional)
+        if: ${{ inputs.enable_review == true || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
+        run: |
+          ./gradlew --stacktrace --no-daemon lintDebug testDebugUnitTest || echo "::warning::Lint/Tests failed (continuing)"
+
+      - name: 🏗️ Build (auto picks release if signing is ready)
+        id: build
+        run: |
+          set -e
+          VARIANT="${{ inputs.build_type }}"
+          if [ "$VARIANT" = "auto" ]; then
+            if [ "${{ steps.ks.outputs.keystore_ready }}" = "true" ]; then VARIANT="release"; else VARIANT="debug"; fi
+          fi
+          echo "Chosen variant: $VARIANT"
+          if [ "$VARIANT" = "release" ]; then
+            echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+            ./gradlew --stacktrace --no-daemon :app:clean :app:assembleRelease :app:bundleRelease
+            echo "apk=app/build/outputs/apk/release/app-release.apk" >> $GITHUB_OUTPUT
+            echo "aab=app/build/outputs/bundle/release/app-release.aab" >> $GITHUB_OUTPUT
+            echo "mapping=app/build/outputs/mapping/release/mapping.txt" >> $GITHUB_OUTPUT
+          else
+            ./gradlew --stacktrace --no-daemon :app:clean :app:assembleDebug
+            echo "apk=app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+          fi
+          echo "variant=$VARIANT" >> $GITHUB_OUTPUT
+
+      - name: ⬆️ Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AndroidSLM-${{ steps.build.outputs.variant }}-artifacts
+          path: |
+            ${{ steps.build.outputs.apk }}
+            ${{ steps.build.outputs.aab }}
+            ${{ steps.build.outputs.mapping }}
+          if-no-files-found: ignore
+          retention-days: 21
+
+      - name: 🏷️ Derive version tag
+        id: tag
+        run: |
+          set -e
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF##*/}"
+          elif [ -n "${{ inputs.version_tag }}" ]; then
+            TAG="${{ inputs.version_tag }}"
+          else
+            if grep -q 'versionName' app/build.gradle.kts; then
+              VERSION=$(grep -E 'versionName\s*=\s*"([^"]+)"' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/' | head -n1)
+            else
+              VERSION="0.0.0"
+            fi
+            SHA=$(git rev-parse --short HEAD)
+            TAG="v${VERSION}-${SHA}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Release tag: $TAG"
+
+      - name: 📰 Release notes (no model section)
+        id: notes
+        run: |
+          set -e
+          VARIANT="${{ steps.build.outputs.variant }}"
+          APK="${{ steps.build.outputs.apk }}"
+          AAB="${{ steps.build.outputs.aab }}"
+          MAP="${{ steps.build.outputs.mapping }}"
+          {
+            echo "## AndroidSLM — $VARIANT build"
+            echo ""
+            echo "- Tag: \`${{ steps.tag.outputs.tag }}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- APK: \`$(basename "$APK")\`"
+            if [ -n "$AAB" ]; then echo "- AAB: \`$(basename "$AAB")\`"; fi
+            if [ -n "$MAP" ]; then echo "- ProGuard mapping: \`$(basename "$MAP")\`"; fi
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: 🏁 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: AndroidSLM ${{ steps.tag.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          prerelease: ${{ inputs.prerelease }}
+          draft: false
+          files: |
+            ${{ steps.build.outputs.apk }}
+            ${{ steps.build.outputs.aab }}
+            ${{ steps.build.outputs.mapping }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================
+  # 🚀 Publish Wiki + GH Pages (No Model)
+  # ============================================================
+  publish:
+    name: Publish Wiki + Pages
+    runs-on: ubuntu-latest
+    needs: [build, detect]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🧮 Resolve TAG/DATE/URLs
+        id: info
+        run: |
+          set -e
+          # Prefer tag from build job, fallback to pushed tag, else timestamp
+          TAG="${{ needs.build.outputs.tag }}"
+          if [ -z "$TAG" ]; then
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then TAG="${GITHUB_REF##*/}"; else TAG="no-build-$(date '+%Y%m%d-%H%M')"; fi
+          fi
+          DATE="$(date '+%Y-%m-%d %H:%M')"
+          REPO="${{ env.REPO }}"
+          OWNER="${{ env.OWNER }}"
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          BASE_URL="https://${OWNER}.github.io/${REPO_NAME}"
+          echo "tag=$TAG"   >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          echo "repo=$REPO" >> $GITHUB_OUTPUT
+          echo "base=$BASE_URL" >> $GITHUB_OUTPUT
+
+      - name: 🌈 Generate Wiki (Home + Build page) — No Model
+        run: |
+          set -e
+          TAG="${{ steps.info.outputs.tag }}"
+          DATE="${{ steps.info.outputs.date }}"
+          REPO="${{ steps.info.outputs.repo }}"
+          BASE_URL="${{ steps.info.outputs.base }}"
+          mkdir -p wiki/Builds
+
+          # Build page (download links only)
+          {
+            echo "# 📦 AndroidSLM — Build ${TAG}"
+            echo "Generated: ${DATE}"
+            echo ""
+            echo "## ⬇️ Download"
+            echo "- [APK (latest release)](https://github.com/${REPO}/releases/latest/download/app-release.apk)"
+            echo "- [Releases](https://github.com/${REPO}/releases)"
+          } > "wiki/Builds/${TAG}.md"
+
+          # Home page
+          {
+            echo "# 🏠 AndroidSLM Wiki Home"
+            echo "Updated: ${DATE}"
+            echo ""
+            echo "## 📜 Build History (latest 20)"
+            find wiki/Builds -type f -name '*.md' | sed 's|wiki/||' | sed 's|.md$||' | sort -r | head -n 20 | \
+              awk -v REPO="${REPO}" '{printf "- [%s](https://github.com/%s/wiki/%s)\n", $0, REPO, $0}'
+            echo ""
+            echo "## 🌐 GH Pages"
+            echo "- [Downloads Page](${BASE_URL})"
+            echo ""
+            echo "## 📱 QR (GH Pages)"
+            echo "<p align='center'><img src='https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${BASE_URL}' width='180'></p>"
+          } > wiki/Home.md
+
+          cd wiki
+          git init
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add .
+          if git diff --cached --quiet; then
+            git commit --allow-empty -m "📦 Ensure master branch exists"
+          else
+            git commit -m "🏠 Update Wiki ${TAG}"
+          fi
+          git branch -M master
+          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${REPO}.wiki.git"
+          git push origin master --force
+
+      - name: 💎 Generate GH Pages (Glass UI) — No Model
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.info.outputs.tag }}"
+          DATE="${{ steps.info.outputs.date }}"
+          REPO="${{ steps.info.outputs.repo }}"
+          BASE_URL="${{ steps.info.outputs.base }}"
+
+          mkdir -p gh-pages
+          cat > gh-pages/index.html <<HTML
+          <!doctype html><html lang="en"><head>
+          <meta charset="utf-8"/>
+          <meta name="viewport" content="width=device-width,initial-scale=1"/>
+          <title>📦 AndroidSLM Downloads</title>
+          <style>
+            body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,'Helvetica Neue',Arial;background:#0b0f17;color:#eee;margin:0}
+            .wrap{max-width:960px;margin:auto;padding:40px}
+            .glass{background:rgba(255,255,255,0.08);border-radius:20px;
+                   box-shadow:0 8px 40px rgba(0,0,0,0.4);
+                   padding:32px;backdrop-filter:blur(14px)}
+            a{color:#72d0ff;text-decoration:none}
+            footer{margin-top:24px;font-size:.85em;opacity:.7;text-align:center}
+          </style>
+          </head>
+          <body><div class="wrap"><div class="glass">
+          <p><a href="index.html" target=_self title="Seperate Page">Go to index</a></p>
+          <h1>📦 AndroidSLM — Build ${TAG}</h1>
+          <p><strong>Generated:</strong> ${DATE}</p>
+          <p><a href="https://github.com/${REPO}/releases/latest/download/app-release.apk">⬇️ Download app-release.apk</a></p>
+          <p><a href="https://github.com/${REPO}/releases">📘 View Releases</a></p>
+          <p style="margin-top:16px;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${BASE_URL}" alt="QR"></p>
+          <footer>Generated by AndroidSLM CI • ${DATE}</footer>
+          </div></div></body></html>
+          HTML
+
+      - name: 🚀 Publish GH Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: gh-pages
+          publish_branch: gh-pages
+          force_orphan: true
+          commit_message: "🌈 Update GH Pages + Wiki (${{steps.info.outputs.tag}})"
