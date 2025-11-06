@@ -1,4 +1,3 @@
-# .github/workflows/AndroidBuild.yml
 # ============================================================
 # 🚀 AndroidSLM — Build + Release + Wiki + Pages (Always Debug Signing)
 # ============================================================
@@ -48,7 +47,7 @@ defaults:
 
 env:
   OWNER: ${{ github.repository_owner }}
-  REPO: ${{ github.repository }}     # e.g., ishizuki-tech/AndroidSLM
+  REPO: ${{ github.repository }}
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
   ANDROID_HOME: /usr/local/lib/android/sdk
   JAVA_VERSION: "17"
@@ -56,10 +55,11 @@ env:
   _JAVA_OPTIONS: "-Xmx4g"
   GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=true"
 
+# ============================================================
+# 🧠 Job: Detect / Build / Publish
+# ============================================================
+
 jobs:
-  # ============================================================
-  # 🧠 Smart Detect
-  # ============================================================
   detect:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -97,14 +97,10 @@ jobs:
       variant: ${{ steps.build.outputs.variant }}
       signing: ${{ steps.build.outputs.signing }}
     steps:
-      - name: 🧰 Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
-
-      - name: 🔒 Validate Gradle Wrapper
-        uses: gradle/actions/wrapper-validation@v3
 
       - name: ☕ Setup Java
         uses: actions/setup-java@v4
@@ -121,69 +117,25 @@ jobs:
         with:
           ndk-version: ${{ env.NDK_VERSION }}
 
-      - name: 📜 Accept Android SDK licenses (best-effort)
-        run: |
-          set -e
-          SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
-          if [ -x "$SDKMANAGER" ]; then yes | "$SDKMANAGER" --licenses || true; fi
-
-      - name: 🧾 Ensure gradlew is executable
-        run: chmod +x ./gradlew
+      - name: 📜 Accept SDK Licenses
+        run: yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
       - name: 🧪 Lint & Unit tests (optional)
         if: ${{ inputs.enable_review == true || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
         run: |
-          ./gradlew --console=plain --info --stacktrace --no-daemon lintDebug testDebugUnitTest || \
-            echo "::warning::Lint/Tests failed (continuing)"
+          ./gradlew lintDebug testDebugUnitTest || echo "::warning::Lint/Tests failed (continuing)"
 
-      - name: 🏗️ Build (release is debug-signed) + Diagnostics
+      - name: 🏗️ Build (release variant debug-signed)
         id: build
         run: |
           set -e
           VARIANT="${{ inputs.build_type }}"
-          if [ "$VARIANT" = "auto" ]; then VARIANT="release"; fi   # 常に release を優先（中身は debug 署名）
-          echo "Chosen variant: $VARIANT (signing=debug)"
-
-          export _JAVA_OPTIONS="-Xmx4g"
-          export GRADLE_OPTS="-Xmx4g -Dorg.gradle.daemon=false"
-
-          # ※ app/build.gradle.kts 側で「release = signingConfigs.debug」にしてあることが前提
-          set +e
-          if [ "$VARIANT" = "release" ]; then
-            ./gradlew --console=plain --info --stacktrace :app:clean :app:assembleRelease :app:bundleRelease
-            STATUS=$?
-            APK_PATH="app/build/outputs/apk/release/app-release.apk"
-            AAB_PATH="app/build/outputs/bundle/release/app-release.aab"
-            MAP_PATH="app/build/outputs/mapping/release/mapping.txt"
-          else
-            ./gradlew --console=plain --info --stacktrace :app:clean :app:assembleDebug
-            STATUS=$?
-            APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
-            AAB_PATH=""
-            MAP_PATH=""
-          fi
-          set -e
-
-          if [ $STATUS -ne 0 ]; then
-            echo "❌ Gradle build failed. Dumping daemon/Kotlin logs..."
-            mkdir -p diag
-            (ls -la ~/.gradle/daemon || true) > diag/gradle-daemon-ls.txt
-            (find ~/.gradle -type f -name "*.log" -maxdepth 3 -print -exec tail -n 200 {} \; || true) > diag/gradle-logs-tail.txt
-            (find . -type f -path "*/kotlin/*" -name "*.log" -print -exec tail -n 200 {} \; || true) > diag/kotlin-logs-tail.txt
-            echo "::group::Gradle/Kotlin logs tail"
-            tail -n 400 diag/gradle-logs-tail.txt || true
-            tail -n 400 diag/kotlin-logs-tail.txt || true
-            echo "::endgroup::"
-            exit $STATUS
-          fi
-
-          test -f "$APK_PATH" || (echo "::error::APK missing: $APK_PATH" && exit 3)
-          echo "apk=$APK_PATH" >> $GITHUB_OUTPUT
-          if [ -n "$AAB_PATH" ] && [ -f "$AAB_PATH" ]; then echo "aab=$AAB_PATH" >> $GITHUB_OUTPUT; fi
-          if [ -n "$MAP_PATH" ] && [ -f "$MAP_PATH" ]; then echo "mapping=$MAP_PATH" >> $GITHUB_OUTPUT; fi
+          [ "$VARIANT" = "auto" ] && VARIANT="release"
           echo "variant=$VARIANT" >> $GITHUB_OUTPUT
+          ./gradlew :app:clean :app:assembleRelease :app:bundleRelease --stacktrace
           echo "signing=debug" >> $GITHUB_OUTPUT
-          echo "::notice::Build success → variant=$VARIANT, signing=debug, APK=$(basename "$APK_PATH"), AAB=$(basename "$AAB_PATH" 2>/dev/null || echo '-')"
+          echo "apk=app/build/outputs/apk/release/app-release.apk" >> $GITHUB_OUTPUT
+          echo "aab=app/build/outputs/bundle/release/app-release.aab" >> $GITHUB_OUTPUT
 
       - name: 🏷️ Derive version tag
         id: tag
@@ -191,77 +143,33 @@ jobs:
           set -e
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF##*/}"
-          elif [ -n "${{ inputs.version_tag }}" ]; then
-            TAG="${{ inputs.version_tag }}"
           else
-            if grep -q 'versionName' app/build.gradle.kts; then
-              VERSION=$(grep -E 'versionName\s*=\s*"([^"]+)"' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/' | head -n1)
-            else
-              VERSION="0.0.0"
-            fi
+            VERSION=$(grep -E 'versionName\s*=\s*"([^"]+)"' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/' | head -n1)
             SHA=$(git rev-parse --short HEAD)
             TAG="v${VERSION}-${SHA}"
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Release tag: $TAG"
 
-      - name: ♻️ Normalize APK filenames (AndroidSLM-*.apk)
+      - name: ♻️ Normalize filenames
         id: alias
         run: |
           set -e
-          APK="${{ steps.build.outputs.apk }}"
           TAG="${{ steps.tag.outputs.tag }}"
           mkdir -p publish
-
-          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-            echo "❌ APK not found at $APK"
-            exit 1
-          fi
-
-          # Tag 固有版 & latest 共通版を作成
-          cp "$APK" "publish/AndroidSLM-${TAG}.apk"
-          cp "$APK" "publish/AndroidSLM-latest.apk"
-
-          ls -lh "$APK" publish || true
-
+          cp app/build/outputs/apk/release/app-release.apk "publish/AndroidSLM-${TAG}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "publish/AndroidSLM-latest.apk"
           echo "apk_tag=publish/AndroidSLM-${TAG}.apk" >> $GITHUB_OUTPUT
           echo "apk_latest=publish/AndroidSLM-latest.apk" >> $GITHUB_OUTPUT
 
-      - name: 📰 Release notes (debug signing)
-        id: notes
+      - name: 📰 Release Notes
         run: |
-          set -e
-          VARIANT="${{ steps.build.outputs.variant }}"
-          APK="${{ steps.build.outputs.apk }}"
-          AAB="${{ steps.build.outputs.aab }}"
-          MAP="${{ steps.build.outputs.mapping }}"
           {
-            echo "## AndroidSLM — $VARIANT build"
-            echo ""
-            echo "- Tag: \`${{ steps.tag.outputs.tag }}\`"
-            echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Signing: \`debug\` (release variant is debug-signed)"
-            echo "- APK: \`$(basename "$APK")\`"
-            if [ -n "$AAB" ]; then echo "- AAB: \`$(basename "$AAB")\`"; fi
-            if [ -n "$MAP" ]; then echo "- ProGuard mapping: \`$(basename "$MAP")\`"; fi
-            echo ""
-            echo "> ⚠️ This build is signed with the DEBUG keystore."
-            echo "> Not suitable for Play upload; for internal distribution/testing."
+            echo "## AndroidSLM — release build"
+            echo "- Tag: ${{ steps.tag.outputs.tag }}"
+            echo "- Signing: debug"
+            echo "- APK: AndroidSLM-${{ steps.tag.outputs.tag }}.apk"
           } > RELEASE_NOTES.md
-          cat RELEASE_NOTES.md
-
-      - name: ⬆️ Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: AndroidSLM-${{ steps.build.outputs.variant }}-artifacts
-          path: |
-            ${{ steps.build.outputs.apk }}
-            ${{ steps.build.outputs.aab }}
-            ${{ steps.build.outputs.mapping }}
-            ${{ steps.alias.outputs.apk_tag }}
-            ${{ steps.alias.outputs.apk_latest }}
-          if-no-files-found: ignore
-          retention-days: 21
 
       - name: 🏁 Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -269,253 +177,96 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: AndroidSLM ${{ steps.tag.outputs.tag }}
           body_path: RELEASE_NOTES.md
-          prerelease: ${{ inputs.prerelease }}
           draft: false
+          prerelease: ${{ inputs.prerelease }}
           files: |
             ${{ steps.alias.outputs.apk_tag }}
             ${{ steps.alias.outputs.apk_latest }}
-            ${{ steps.build.outputs.apk }}
-            ${{ steps.build.outputs.aab }}
-            ${{ steps.build.outputs.mapping }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================================
-  # 🚀 Publish Wiki + GH Pages (No Model sections)
+  # 🚀 Publish Wiki + GH Pages
   # ============================================================
   publish:
     name: Publish Wiki + Pages
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [build, detect]
-    if: always()
+    needs: build
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🧮 Resolve TAG/DATE/URLs
+      - name: 🧮 Resolve TAG/DATE
         id: info
         run: |
-          set -e
           TAG="${{ needs.build.outputs.tag }}"
-          if [ -z "$TAG" ]; then
-            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then TAG="${GITHUB_REF##*/}"; else TAG="no-build-$(date '+%Y%m%d-%H%M')"; fi
-          fi
           DATE="$(date '+%Y-%m-%d %H:%M')"
           REPO="${{ env.REPO }}"
-          OWNER="${{ env.OWNER }}"
-          REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          BASE_URL="https://${OWNER}.github.io/${REPO_NAME}"
-          echo "tag=$TAG"   >> $GITHUB_OUTPUT
+          BASE_URL="https://${{ env.OWNER }}.github.io/${REPO#*/}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "date=$DATE" >> $GITHUB_OUTPUT
           echo "repo=$REPO" >> $GITHUB_OUTPUT
           echo "base=$BASE_URL" >> $GITHUB_OUTPUT
 
-      - name: 🌈 Generate Wiki (Home + Build page) — No Model
+      - name: 🌈 Generate Wiki (auto-detect release assets)
         run: |
           set -e
           TAG="${{ steps.info.outputs.tag }}"
-          DATE="${{ steps.info.outputs.date }}"
           REPO="${{ steps.info.outputs.repo }}"
-          BASE_URL="${{ steps.info.outputs.base }}"
+          DATE="${{ steps.info.outputs.date }}"
 
-          mkdir -p wiki
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y jq >/dev/null
 
-          # ==========================================
-          # 🧹 旧 Builds/ 配下のページをルートへマイグレート（1回きり運用想定）
-          #   - wiki/Builds/v1.0-xxx.md → wiki/v1.0-xxx.md
-          #   - 既に同名ファイルがあれば上書きしない
-          # ==========================================
-          if [ -d wiki/Builds ]; then
-            echo "🔄 Migrating legacy wiki/Builds/*.md to wiki/<TAG>.md ..."
-            shopt -s nullglob
-            for f in wiki/Builds/*.md; do
-              base="$(basename "$f")"       # v1.0-xxx.md
-              target="wiki/${base}"
-              if [ -f "$target" ]; then
-                echo "⚠️ Skip existing ${target}"
-              else
-                mv "$f" "$target"
-                echo "➡️ Moved ${f} -> ${target}"
-              fi
-            done
-            shopt -u nullglob
+          # 最新リリースから tag と APK 名を取得
+          curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/releases?per_page=5" -o releases.json
+
+          LATEST_TAG=$(jq -r '[.[] | select(.draft==false)][0].tag_name' releases.json)
+          LATEST_APK=$(jq -r '[.[] | select(.draft==false)][0].assets[]?.name | select(test("\\.apk$"))' releases.json | head -n1)
+
+          if [ -n "$LATEST_TAG" ] && [ -n "$LATEST_APK" ]; then
+            LATEST_APK_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_APK}"
+          else
+            LATEST_APK_URL="https://github.com/${REPO}/releases"
           fi
 
-          # ==========================================
-          # 📦 Build 個別ページ: wiki/<TAG>.md
-          # URL: https://github.com/<REPO>/wiki/<TAG>
-          # ==========================================
+          mkdir -p wiki
           {
             echo "# 📦 AndroidSLM — Build ${TAG}"
             echo "Generated: ${DATE}"
             echo ""
             echo "## ⬇️ Download"
-            echo "- [Latest APK](https://github.com/${REPO}/releases/latest/download/AndroidSLM-latest.apk)"
+            echo "- [Latest APK](${LATEST_APK_URL})"
             echo "- [This tag APK](https://github.com/${REPO}/releases/download/${TAG}/AndroidSLM-${TAG}.apk)"
             echo "- [All Releases](https://github.com/${REPO}/releases)"
           } > "wiki/${TAG}.md"
-
-          # ==========================================
-          # 🏠 Home ページ再生成
-          #   - 対象: wiki 直下の *.md（Home.md 除く）
-          #   - 期待例: wiki/v1.0-aee3b8a.md → /wiki/v1.0-aee3b8a
-          # ==========================================
-          {
-            echo "# 🏠 AndroidSLM Wiki Home"
-            echo "Updated: ${DATE}"
-            echo ""
-            echo "## 📜 Build History (latest 20)"
-          } > wiki/Home.md
-
-          MAP_TMP="wiki/_link-map.txt"
-          : > "$MAP_TMP"
-
-          LIST=$(find wiki -maxdepth 1 -type f -name '*.md' ! -name 'Home.md' | sort -r | head -n 20 || true)
-
-          if [ -z "$LIST" ]; then
-            echo "_No builds yet._" >> wiki/Home.md
-          else
-            echo "$LIST" | while read -r f; do
-              base="$(basename "$f" .md)"    # 例: v1.0-aee3b8a
-              # slug は基本そのまま（タグに空白/スラッシュない前提）
-              slug="$(printf '%s' "$base" | sed -E 's@[[:space:]]+@-@g; s@/@-@g; s/-+/-/g')"
-              printf -- "- [%s](https://github.com/%s/wiki/%s)\n" "$base" "$REPO" "$slug" >> wiki/Home.md
-              printf -- "%s.md -> %s\n" "$base.md" "$slug" >> "$MAP_TMP"
-            done
-          fi
-
-          {
-            echo ""
-            echo "## 🌐 GH Pages"
-            echo "- [Downloads Page](${BASE_URL})"
-            echo ""
-            echo "## 📱 QR (GH Pages)"
-            echo "<p align='center'><img src='https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${BASE_URL}' width='180'></p>"
-          } >> wiki/Home.md
-
-          # ==========================================
-          # 🔍 Debug: 生成結果表示
-          # ==========================================
-          echo "::group::Wiki tree"
-          ls -R wiki || true
-          echo "::endgroup::"
-
-          echo "::group::Wiki link map (file -> slug)"
-          cat "$MAP_TMP" || echo "no build pages"
-          echo "::endgroup::"
-
-          # ==========================================
-          # 🚀 Push Wiki
-          # ==========================================
-          cd wiki
-          git init
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add .
-          if git diff --cached --quiet; then
-            git commit --allow-empty -m "📦 Ensure master branch exists"
-          else
-            git commit -m "🏠 Update Wiki ${TAG}"
-          fi
-          git branch -M master
-          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${REPO}.wiki.git"
-          git push origin master --force
 
       - name: 💎 Generate GH Pages (Glass UI)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
-          # ------- Inputs from previous step (publish/info) -------
-          TAG_THIS="${{ steps.info.outputs.tag }}"
+          TAG="${{ steps.info.outputs.tag }}"
           DATE="${{ steps.info.outputs.date }}"
           REPO="${{ steps.info.outputs.repo }}"
           BASE_URL="${{ steps.info.outputs.base }}"
 
-          # ------- Optional: current build info (あれば使う / 無ければ空でOK) -------
-          VARIANT="${{ needs.build.outputs.variant }}"
-          APK_NAME_THIS="${{ needs.build.outputs.apk_name }}"
-          AAB_NAME_THIS="${{ needs.build.outputs.aab_name }}"
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y jq >/dev/null
 
-          # ------- jq が無ければ導入 -------
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y >/dev/null
-            sudo apt-get install -y jq -y >/dev/null
-          fi
+          # 最新APK検出
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/releases?per_page=5" -o releases.json
 
-          # ------- 最新リリース取得（非 draft 優先 / prerelease は許可） -------
-          if ! curl -fsSL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/releases?per_page=10" \
-              -o releases.json; then
-            echo "::warning::Failed to fetch releases. Falling back to Releases page only."
-            echo "{}" > releases.json
-          fi
+          LATEST_TAG=$(jq -r '[.[] | select(.draft==false)][0].tag_name' releases.json)
+          LATEST_APK=$(jq -r '[.[] | select(.draft==false)][0].assets[]?.name | select(test("\\.apk$"))' releases.json | head -n1)
+          LATEST_APK_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_APK}"
 
-          # 最初の非 draft リリース
-          LATEST_TAG="$(jq -r '[ .[] | select(.draft==false) ][0].tag_name // empty' releases.json || echo "")"
-
-          # assets 一覧（名前のみ）
-          ASSETS="$(jq -r '[ .[] | select(.draft==false) ][0].assets[]?.name // empty' releases.json 2>/dev/null || true)"
-
-          echo "::group::Latest release raw info"
-          echo "LATEST_TAG from API : ${LATEST_TAG:-'(none)'}"
-          echo "ASSETS:"
-          printf '%s\n' "${ASSETS:-'(none)'}"
-          echo "::endgroup::"
-
-          # ------- APK / AAB の自動検出ロジック -------
-          LATEST_APK_NAME=""
-          LATEST_AAB_NAME=""
-
-          if [ -n "$ASSETS" ]; then
-            # 優先度: AndroidSLM-latest.apk → AndroidSLM-*.apk → app-release.apk → release.*.apk → 最初の *.apk
-            if echo "$ASSETS" | grep -Fxq 'AndroidSLM-latest.apk'; then
-              LATEST_APK_NAME='AndroidSLM-latest.apk'
-            elif echo "$ASSETS" | grep -Eiq '^AndroidSLM-.*\.apk$'; then
-              LATEST_APK_NAME="$(echo "$ASSETS" | grep -Ei '^AndroidSLM-.*\.apk$' | head -n1)"
-            elif echo "$ASSETS" | grep -Fxq 'app-release.apk'; then
-              LATEST_APK_NAME='app-release.apk'
-            elif echo "$ASSETS" | grep -Eiq 'release.*\.apk$'; then
-              LATEST_APK_NAME="$(echo "$ASSETS" | grep -Ei 'release.*\.apk$' | head -n1)"
-            elif echo "$ASSETS" | grep -Eq '\.apk$'; then
-              LATEST_APK_NAME="$(echo "$ASSETS" | grep -E '\.apk$' | head -n1)"
-            fi
-
-            # AAB があれば 1つ拾う
-            if echo "$ASSETS" | grep -Eq '\.aab$'; then
-              LATEST_AAB_NAME="$(echo "$ASSETS" | grep -E '\.aab$' | head -n1)"
-            fi
-          fi
-
-          # ------- URL 組み立て（無ければ Releases にフォールバック） -------
-          if [ -n "${LATEST_TAG}" ] && [ -n "${LATEST_APK_NAME}" ]; then
-            APK_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_APK_NAME}"
-          else
-            APK_URL="https://github.com/${REPO}/releases"
-          fi
-
-          if [ -n "${LATEST_TAG}" ] && [ -n "${LATEST_AAB_NAME}" ]; then
-            AAB_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_AAB_NAME}"
-          else
-            AAB_URL=""
-          fi
-
-          echo "::group::Resolved latest release asset"
-          echo "LATEST_TAG      : ${LATEST_TAG:-'(none)'}"
-          echo "LATEST_APK_NAME : ${LATEST_APK_NAME:-'(none)'}"
-          echo "LATEST_AAB_NAME : ${LATEST_AAB_NAME:-'(none)'}"
-          echo "APK_URL         : ${APK_URL}"
-          if [ -n "${AAB_URL}" ]; then
-            echo "AAB_URL         : ${AAB_URL}"
-          fi
-          echo "::endgroup::"
-
-          # ------- GH Pages (Glass UI) HTML 出力 -------
           mkdir -p gh-pages
           cat > gh-pages/index.html <<HTML
           <!doctype html><html lang="en"><head>
@@ -523,47 +274,22 @@ jobs:
           <meta name="viewport" content="width=device-width,initial-scale=1"/>
           <title>📦 AndroidSLM Downloads</title>
           <style>
-            body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,'Helvetica Neue',Arial;background:#0b0f17;color:#eee;margin:0}
+            body{font-family:system-ui,Roboto,Inter,Arial;background:#0b0f17;color:#eee;margin:0}
             .wrap{max-width:960px;margin:auto;padding:40px}
-            .glass{background:rgba(255,255,255,0.08);border-radius:20px;
-                   box-shadow:0 8px 40px rgba(0,0,0,0.4);
-                   padding:32px;backdrop-filter:blur(14px)}
+            .glass{background:rgba(255,255,255,0.08);border-radius:20px;box-shadow:0 8px 40px rgba(0,0,0,0.4);padding:32px;backdrop-filter:blur(14px)}
             a{color:#72d0ff;text-decoration:none}
             footer{margin-top:24px;font-size:.85em;opacity:.7;text-align:center}
-            .muted{opacity:.8}
-            .row a{display:inline-block;margin-right:10px}
             code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:6px}
-          </style>
-          </head>
+          </style></head>
           <body><div class="wrap"><div class="glass">
           <h1>📦 AndroidSLM — Latest Downloads</h1>
-          <p class="muted"><strong>Generated:</strong> ${DATE}</p>
-
+          <p><strong>Generated:</strong> ${DATE}</p>
           <h2>⬇️ Latest Release</h2>
-          <p class="row">
-            <a href="${APK_URL}">APK${LATEST_APK_NAME:+ (<code>${LATEST_APK_NAME}</code>)}</a>
-            ${AAB_URL:+<a href="${AAB_URL}">AAB (<code>${LATEST_AAB_NAME}</code>)</a>}
-          </p>
-          <p>
-            ${LATEST_TAG:+<a href="https://github.com/${REPO}/releases/tag/${LATEST_TAG}">🔖 ${LATEST_TAG}</a> • }
-            <a href="https://github.com/${REPO}/releases">📘 All Releases</a>
-          </p>
-
-          <hr style="border-color:rgba(255,255,255,.15);margin:24px 0">
-
-          <h2>🧪 This Build (if available)</h2>
-          <p class="muted">
-            <strong>Tag:</strong> ${TAG_THIS} • <strong>Variant:</strong> ${VARIANT:-n/a}
-          </p>
-          <p class="row">
-            ${APK_NAME_THIS:+<a href="https://github.com/${REPO}/releases/download/${TAG_THIS}/${APK_NAME_THIS}">This build APK (<code>${APK_NAME_THIS}</code>)</a>}
-            ${AAB_NAME_THIS:+<a href="https://github.com/${REPO}/releases/download/${TAG_THIS}/${AAB_NAME_THIS}">This build AAB (<code>${AAB_NAME_THIS}</code>)</a>}
-          </p>
-
-          <p style="margin-top:16px;">
-            <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${BASE_URL}" alt="QR">
-          </p>
-          <footer>Generated by AndroidSLM CI • ${DATE}</footer>
+          <p><a href="${LATEST_APK_URL}">Download APK (<code>${LATEST_APK}</code>)</a></p>
+          <p><a href="https://github.com/${REPO}/releases/tag/${LATEST_TAG}">🔖 ${LATEST_TAG}</a> • <a href="https://github.com/${REPO}/releases">📘 All Releases</a></p>
+          <hr><p><strong>QR:</strong></p>
+          <p><img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${BASE_URL}" alt="QR"></p>
+          <footer>Generated by AndroidSLM CI — ${DATE}</footer>
           </div></div></body></html>
           HTML
 
