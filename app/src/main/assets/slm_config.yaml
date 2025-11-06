@@ -1,0 +1,55 @@
+model_defaults:
+  # Model download UI defaults
+
+  default_model_url: "https://huggingface.co/google/gemma-3n-E4B-it-litert-lm/resolve/main/gemma-3n-E4B-it-int4.litertlm"
+  default_file_name: "Gemma3n4B.litertlm"
+
+  # default_model_url: "https://huggingface.co/google/gemma-3n-E2B-it-litert-lm/resolve/main/gemma-3n-E2B-it-int4.litertlm"
+  # default_file_name: "Gemma3n2B.litertlm"
+  # default_model_url: "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4.litertlm"
+  # default_file_name: "Gemma31B.litertlm"
+  # default_model_url: "https://huggingface.co/litert-community/Gemma2-2B-IT/resolve/main/Gemma2-2B-IT_multi-prefill-seq_q8_ekv1280.task"
+  # default_file_name: "Gemma2-2B.task"
+  # default_model_url: "https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task"
+  # default_file_name: "Qwen2-5-0-5B.task"
+  # default_model_url: "https://huggingface.co/litert-community/Phi-4-mini-instruct/resolve/main/phi4_q8_ekv1280.task"
+  # default_file_name: "phi4_q8_ekv1280.task"
+
+  # Optional tuning knobs (keep same defaults as code)
+  timeout_ms: 1800000          # 30 minutes
+  ui_throttle_ms: 250
+  ui_min_delta_bytes: 1048576  # 1 MiB
+
+slm:
+  accelerator: "GPU"
+  max_tokens: 4096
+  top_k: 10
+  top_p: 0.2
+  temperature: 0.5
+  user_turn_prefix: "<start_of_turn>user"
+  model_turn_prefix: "<start_of_turn>model"
+  turn_end: "<end_of_turn>"
+  empty_json_instruction: "Respond with an empty JSON object: {}"
+  preamble: "You are a well-known farmer survey expert. Read the Question and the Answer."
+  key_contract: |
+    OUTPUT FORMAT:
+    - In English.
+    - Keys:
+      • "analysis": short string
+      • "expected answer": short string
+      • "follow-up question": a single short confirm/validate question (NOT an array)
+      • "score": integer 1–100
+    FOLLOW-UP INTENT:
+    - The follow-up must confirm or clarify the respondent's original answer to the SAME question.
+    - It must target the biggest uncertainty: missing unit/scale, missing number, time window, baseline, or method used.
+    - Keep it single-scope (no multi-part), concrete, and answerable immediately.
+    - Do not introduce new topics or additional objectives.
+  length_budget: |
+    LENGTH LIMITS:
+    - analysis<=60 chars; follow-up<=120; expected answer<=120.
+  scoring_rule: "Scoring rule: Judge ONLY content relevance/completeness/accuracy. Do NOT penalize style or formatting."
+  strict_output: |-
+    STRICT OUTPUT (NO MARKDOWN):
+    - RAW JSON only, ONE LINE.
+    - Use COMPACT JSON (no spaces around ':' and ',').
+    - No extra text.

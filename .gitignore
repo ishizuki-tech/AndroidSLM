@@ -1,0 +1,203 @@
+# =========================================
+# ✅ Android / Gradle — Production-Ready .gitignore (Final, Submodule Safe)
+# -----------------------------------------
+# Notes:
+# - Keep Gradle Wrapper in VCS: gradlew, gradlew.bat, gradle/wrapper/** MUST be committed.
+# - Supports multi-module projects (app/, :feature, :nativelib, etc.).
+# - Prebuilt JNI libs under src/**/jniLibs/** SHOULD be committed; build artifacts should not.
+# - Submodules (e.g., whisper_core) are tracked only by reference (.gitmodules).
+# =========================================
+
+# -----------------------------------------
+# Gradle caches & build outputs
+# -----------------------------------------
+.gradle/
+**/build/
+**/.cxx/
+**/.externalNativeBuild/
+.kotlinc/
+.kotlin/
+
+# Keep Gradle Wrapper tracked
+!gradlew
+!gradlew.bat
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# -----------------------------------------
+# Local environment / secrets
+# -----------------------------------------
+local.properties
+!gradle.public.properties
+!gradle-example.properties
+# Keep gradle.properties tracked
+!gradle.properties
+
+# -----------------------------------------
+# Android build artifacts & packaging
+# -----------------------------------------
+*.apk
+*.aab
+*.ap_
+*.dex
+output.json
+output-metadata.json
+**/outputs/mapping/
+**/lint-results*
+**/reports/
+**/test-results/
+**/androidTest-results/
+captures/
+
+# -----------------------------------------
+# Logs & temporary files
+# -----------------------------------------
+*.log
+*.temp
+*.tmp
+*.orig
+*.rej
+*.bak
+*.swp
+*.swo
+*.patch
+*.toc
+*.aux
+
+# Crash / heap / trace artifacts
+*.hprof
+*.ctest
+*.trace
+*.gpuprofile
+*.coredump
+core
+core.*
+
+# -----------------------------------------
+# IDE / Tooling
+# -----------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.fleet/
+# Android Studio misc
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
+# Uncomment if you want to commit code style / run configs
+#!.idea/codeStyles/
+#!.idea/runConfigurations/
+
+# -----------------------------------------
+# OS / System files
+# -----------------------------------------
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*~
+# macOS Finder metadata
+.DS_Store
+*.DS_Store
+
+# -----------------------------------------
+# Android-specific folders / secrets
+# -----------------------------------------
+google-services.json
+!google-services.example.json
+**/crashlytics-build.properties
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+secrets.*
+*.pem
+*.p12
+*.cer
+*.key
+
+# -----------------------------------------
+# NDK / C++ Native (CMake / ndk-build) artifacts
+# -----------------------------------------
+**/obj/
+**/libs/
+!**/src/**/jniLibs/
+!**/src/**/jniLibs/**
+**/cmake-build*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+**/build.ninja
+**/.ninja_deps
+**/.ninja_log
+**/rules.ninja
+
+# -----------------------------------------
+# Kotlin / Annotation processors
+# -----------------------------------------
+.kapt/
+.ksp/
+
+# -----------------------------------------
+# Testing / Benchmarking
+# -----------------------------------------
+**/benchmark/**/reports/
+**/benchmark/**/results/
+**/benchmark/**/outputs/
+**/profiling/**
+
+# -----------------------------------------
+# Module / Subproject-specific (example: nativelib)
+# -----------------------------------------
+nativelib/.cxx/
+nativelib/build/
+nativelib/obj/
+!nativelib/src/
+!nativelib/src/**
+
+# -----------------------------------------
+# Submodules (REFERENCE ONLY)
+# -----------------------------------------
+# Always track submodule references, not contents.
+!.gitmodules
+# Submodule placeholder — contents ignored
+nativelib/whisper.cpp/*
+!nativelib/whisper.cpp/.git
+
+# (Add more submodules below if needed)
+# third_party/ggml/*
+# !third_party/ggml/.git
+
+# -----------------------------------------
+# Whisper models — exclude large binaries (CI auto-download)
+# -----------------------------------------
+app/src/main/assets/models/*.bin
+!app/src/main/assets/models/.keep
+
+# -----------------------------------------
+# Optional toolchains (uncomment if used)
+# -----------------------------------------
+#.ktlint/
+#.detekt/
+#.scannerwork/
+#node_modules/
+#pnpm-lock.yaml
+#package-lock.json
+#yarn.lock
+#dist/
+
+# -----------------------------------------
+# Misc build/IDE files (legacy)
+# -----------------------------------------
+build/
+.externalNativeBuild/
+.cxx/
