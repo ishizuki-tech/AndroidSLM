@@ -7,6 +7,7 @@
 # - Build Debug/Release (APK + AAB for release), optional signing via secrets
 # - Create GitHub Release and upload artifacts
 # - Update Wiki (Home + Build page) and GH Pages (gh-pages) — NO MODEL SECTIONS
+# - 🔎 Diagnostics: rich logs + Gradle/Kotlin tail dump on failure
 # ------------------------------------------------------------
 # Optional repo secrets for release signing:
 #   ANDROID_KEYSTORE_B64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
@@ -62,10 +63,10 @@ env:
   _JAVA_OPTIONS: "-Xmx4g"
   GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=true"
 
-# ============================================================
-# 🧠 Smart Detect
-# ============================================================
 jobs:
+  # ============================================================
+  # 🧠 Smart Detect
+  # ============================================================
   detect:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -140,9 +141,10 @@ jobs:
       - name: 🧪 Lint & Unit tests (optional)
         if: ${{ inputs.enable_review == true || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
         run: |
-          ./gradlew --stacktrace --no-daemon lintDebug testDebugUnitTest || echo "::warning::Lint/Tests failed (continuing)"
+          ./gradlew --console=plain --info --stacktrace --no-daemon lintDebug testDebugUnitTest || \
+            echo "::warning::Lint/Tests failed (continuing)"
 
-      - name: 🏗️ Build (auto picks release if signing is ready)
+      - name: 🏗️ Build (auto picks release if signing is ready) + Diagnostics
         id: build
         run: |
           set -e
@@ -151,19 +153,59 @@ jobs:
             if [ "${{ steps.ks.outputs.keystore_ready }}" = "true" ]; then VARIANT="release"; else VARIANT="debug"; fi
           fi
           echo "Chosen variant: $VARIANT"
+
+          # Kotlin を in-process 実行（詳細ログ/スタックトレースが明瞭）
+          export ORG_GRADLE_PROJECT_kotlin.compiler.execution.strategy=in-process
+          export _JAVA_OPTIONS="-Xmx4g"
+          export GRADLE_OPTS="-Xmx4g -Dorg.gradle.daemon=false"
+
+          set +e
           if [ "$VARIANT" = "release" ]; then
             echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
             echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
             echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
-            ./gradlew --stacktrace --no-daemon :app:clean :app:assembleRelease :app:bundleRelease
-            echo "apk=app/build/outputs/apk/release/app-release.apk" >> $GITHUB_OUTPUT
-            echo "aab=app/build/outputs/bundle/release/app-release.aab" >> $GITHUB_OUTPUT
-            echo "mapping=app/build/outputs/mapping/release/mapping.txt" >> $GITHUB_OUTPUT
+            ./gradlew --console=plain --info --stacktrace :app:clean :app:assembleRelease :app:bundleRelease
+            STATUS=$?
+            APK_PATH="app/build/outputs/apk/release/app-release.apk"
+            AAB_PATH="app/build/outputs/bundle/release/app-release.aab"
+            MAP_PATH="app/build/outputs/mapping/release/mapping.txt"
           else
-            ./gradlew --stacktrace --no-daemon :app:clean :app:assembleDebug
-            echo "apk=app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+            ./gradlew --console=plain --info --stacktrace :app:clean :app:assembleDebug
+            STATUS=$?
+            APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+            AAB_PATH=""
+            MAP_PATH=""
           fi
+          set -e
+
+          # 失敗時のログ収集
+          if [ $STATUS -ne 0 ]; then
+            echo "❌ Gradle build failed. Dumping daemon/Kotlin logs..."
+            mkdir -p diag
+            (ls -la ~/.gradle/daemon || true) > diag/gradle-daemon-ls.txt
+            (find ~/.gradle -type f -name "*.log" -maxdepth 3 -print -exec tail -n 200 {} \; || true) > diag/gradle-logs-tail.txt
+            (find . -type f -path "*/kotlin/*" -name "*.log" -print -exec tail -n 200 {} \; || true) > diag/kotlin-logs-tail.txt
+            echo "::group::Gradle/Kotlin logs tail"
+            tail -n 400 diag/gradle-logs-tail.txt || true
+            tail -n 400 diag/kotlin-logs-tail.txt || true
+            echo "::endgroup::"
+            exit $STATUS
+          fi
+
+          test -f "$APK_PATH" || (echo "APK not found: $APK_PATH" && exit 1)
+          echo "apk=$APK_PATH" >> $GITHUB_OUTPUT
+          if [ -n "$AAB_PATH" ] && [ -f "$AAB_PATH" ]; then echo "aab=$AAB_PATH" >> $GITHUB_OUTPUT; fi
+          if [ -n "$MAP_PATH" ] && [ -f "$MAP_PATH" ]; then echo "mapping=$MAP_PATH" >> $GITHUB_OUTPUT; fi
           echo "variant=$VARIANT" >> $GITHUB_OUTPUT
+
+      - name: 📦 Upload diagnostics (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: diag
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: ⬆️ Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -247,7 +289,6 @@ jobs:
         id: info
         run: |
           set -e
-          # Prefer tag from build job, fallback to pushed tag, else timestamp
           TAG="${{ needs.build.outputs.tag }}"
           if [ -z "$TAG" ]; then
             if [[ "${GITHUB_REF}" == refs/tags/* ]]; then TAG="${GITHUB_REF##*/}"; else TAG="no-build-$(date '+%Y%m%d-%H%M')"; fi
@@ -271,7 +312,6 @@ jobs:
           BASE_URL="${{ steps.info.outputs.base }}"
           mkdir -p wiki/Builds
 
-          # Build page (download links only)
           {
             echo "# 📦 AndroidSLM — Build ${TAG}"
             echo "Generated: ${DATE}"
@@ -281,7 +321,6 @@ jobs:
             echo "- [Releases](https://github.com/${REPO}/releases)"
           } > "wiki/Builds/${TAG}.md"
 
-          # Home page
           {
             echo "# 🏠 AndroidSLM Wiki Home"
             echo "Updated: ${DATE}"
