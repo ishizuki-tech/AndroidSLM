@@ -36,7 +36,7 @@ subprojects {
         extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinAndroidProjectExtension> {
             compilerOptions {
                 jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-                freeCompilerArgs.add("-Xjsr305=strict") // Strict Java interop
+                freeCompilerArgs.addAll(listOf("-Xjsr305=strict")) // Strict Java interop
 
                 // Optional: treat warnings as errors locally (disabled on CI)
                 allWarningsAsErrors.set(System.getenv("CI").isNullOrEmpty())
@@ -49,20 +49,20 @@ subprojects {
         extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
             compilerOptions {
                 jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-                freeCompilerArgs.add("-Xjsr305=strict")
+                freeCompilerArgs.addAll(listOf("-Xjsr305=strict"))
             }
         }
     }
 
     // --- Plain Java modules (if any) ---
     plugins.withId("java") {
-        extensions.configure<JavaPluginExtension> {
+        extensions.configure<org.gradle.api.plugins.JavaPluginExtension> {
             toolchain.languageVersion.set(JavaLanguageVersion.of(17))
         }
     }
 
     // --- Common test configuration (JUnit 5, clear output) ---
-    tasks.withType<Test>().configureEach {
+    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
         useJUnitPlatform()
         testLogging {
             events("passed", "skipped", "failed")
@@ -94,25 +94,31 @@ subprojects {
 // • Wrapper JDK version and Gradle version should match toolchain.
 // ============================================================
 
-// --- Safety: Verify wrapper version consistency ---
-gradle.projectsEvaluated {
-    val wrapperFile = file("gradle/wrapper/gradle-wrapper.properties")
+// --- Safety: Verify wrapper version consistency (local-only to keep config-cache happy on CI) ---
+if (System.getenv("CI").isNullOrEmpty()) {
+    gradle.projectsEvaluated {
+        val wrapperFile = file("gradle/wrapper/gradle-wrapper.properties")
+        if (!wrapperFile.exists()) {
+            logger.warn("⚠️ gradle/wrapper/gradle-wrapper.properties not found.")
+            return@projectsEvaluated
+        }
 
-    if (!wrapperFile.exists()) {
-        logger.warn("⚠️ gradle/wrapper/gradle-wrapper.properties not found.")
-        return@projectsEvaluated
-    }
+        val content = wrapperFile.readText()
+        val wrapper = Regex("distributionUrl=.*gradle-([0-9.]+)-").find(content)?.groupValues?.getOrNull(1)
+        val ok = run {
+            val parts = (wrapper ?: "0.0").split(".")
+            val major = parts.getOrNull(0)?.toIntOrNull() ?: 0
+            val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            (major > 8) || (major == 8 && minor >= 13)
+        }
 
-    val content = wrapperFile.readText()
-    val distributionUrl = Regex("distributionUrl=.*gradle-(\\d+\\.\\d+)")
-        .find(content)
-        ?.groupValues
-        ?.getOrNull(1)
-
-    when {
-        distributionUrl == null -> logger.warn("⚠️ distributionUrl missing in gradle-wrapper.properties")
-        distributionUrl != "8.13" -> logger.lifecycle("ℹ️ Gradle Wrapper version: $distributionUrl (recommended: 8.13)")
-        else -> logger.lifecycle("✅ Gradle Wrapper version verified (8.13)")
+        if (wrapper == null) {
+            logger.warn("⚠️ distributionUrl missing in gradle-wrapper.properties")
+        } else if (!ok) {
+            logger.warn("⚠️ Gradle Wrapper $wrapper (< 8.13). Consider upgrading to 8.13+.")
+        } else {
+            logger.lifecycle("✅ Gradle Wrapper OK ($wrapper)")
+        }
     }
 }
 
@@ -121,7 +127,7 @@ gradle.projectsEvaluated {
 // ------------------------------------------------------------
 // 🧩 Kotlin:      2.2.21
 // 🧩 AGP:         8.13
-// 🧩 Gradle:      8.14
+// 🧩 Gradle:      8.14.x (Wrapper 8.13+ accepted)
 // 🧩 JDK:         17 (toolchain-enforced)
 // 🧩 Tests:       JUnit 5 enabled globally
 // 🧩 Cache:       Controlled via settings.gradle.kts
@@ -130,5 +136,5 @@ gradle.projectsEvaluated {
 // ============================================================
 // 🧱 End of Root Build Script
 // ------------------------------------------------------------
-// ✅ Debugged & Verified for Gradle 8.14 / Kotlin 2.2.21 / AGP 8.13
+// ✅ Verified for Gradle 8.14 / Kotlin 2.2.21 / AGP 8.13
 // ============================================================
