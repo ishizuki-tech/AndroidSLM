@@ -322,6 +322,7 @@ jobs:
           BASE_URL="${{ steps.info.outputs.base }}"
           mkdir -p wiki/Builds
 
+          # Build page（/ はファイルパスとして保持）
           {
             echo "# 📦 AndroidSLM — Build ${TAG}"
             echo "Generated: ${DATE}"
@@ -331,21 +332,49 @@ jobs:
             echo "- [Releases](https://github.com/${REPO}/releases)"
           } > "wiki/Builds/${TAG}.md"
 
+          # Home page（Wiki の URL 仕様に合わせ slug 化してリンク生成）
           {
             echo "# 🏠 AndroidSLM Wiki Home"
             echo "Updated: ${DATE}"
             echo ""
             echo "## 📜 Build History (latest 20)"
-            find wiki/Builds -type f -name '*.md' | sed 's|wiki/||' | sed 's|.md$||' | sort -r | head -n 20 | \
-              awk -v REPO="${REPO}" '{printf "- [%s](https://github.com/%s/wiki/%s)\n", $0, REPO, $0}'
-            echo ""
+          } > wiki/Home.md
+
+          MAP_TMP="wiki/_link-map.txt"
+          : > "$MAP_TMP"
+
+          # 一覧を slug 化（'/' と空白→'-'、連続 '-' を 1つに）
+          LIST=$(find wiki/Builds -type f -name '*.md' | sort -r | head -n 20 || true)
+          if [ -z "$LIST" ]; then
+            echo "_No builds yet._" >> wiki/Home.md
+          else
+            echo "$LIST" | while read -r f; do
+              rel="${f#wiki/}"              # 例: 'Builds/v1.0-d7ddc39.md'
+              name="${rel%.md}"             # 例: 'Builds/v1.0-d7ddc39'
+              slug="$(printf '%s' "$name" | sed -E 's/[[:space:]]+/-/g; s@/@-@g; s/-+/-/g')"  # 'Builds-v1.0-d7ddc39'
+              printf -- "- [%s](https://github.com/%s/wiki/%s)\n" "$name" "$REPO" "$slug" >> wiki/Home.md
+              printf -- "%s -> %s\n" "$name" "$slug" >> "$MAP_TMP"
+            done
+          fi
+
+          echo "" >> wiki/Home.md
+          {
             echo "## 🌐 GH Pages"
             echo "- [Downloads Page](${BASE_URL})"
             echo ""
             echo "## 📱 QR (GH Pages)"
             echo "<p align='center'><img src='https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${BASE_URL}' width='180'></p>"
-          } > wiki/Home.md
+          } >> wiki/Home.md
 
+          # デバッグ：生成物の確認 + リンク対応表
+          echo "::group::Wiki tree"
+          ls -R wiki || true
+          echo "::endgroup::"
+          echo "::group::Wiki link map (original -> slug)"
+          cat "$MAP_TMP" || true
+          echo "::endgroup::"
+
+          # push
           cd wiki
           git init
           git config user.name "github-actions"
