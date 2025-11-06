@@ -342,46 +342,89 @@ jobs:
           git push origin master --force
 
       - name: 💎 Generate GH Pages (Glass UI)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           # ------- Inputs from previous step (publish/info) -------
-          TAG="${{ steps.info.outputs.tag }}"
+          TAG_THIS="${{ steps.info.outputs.tag }}"
           DATE="${{ steps.info.outputs.date }}"
           REPO="${{ steps.info.outputs.repo }}"
           BASE_URL="${{ steps.info.outputs.base }}"
 
-          # ------- Build job outputs (actual artifact names) -------
-          APK_NAME="${{ needs.build.outputs.apk_name }}"
-          AAB_NAME="${{ needs.build.outputs.aab_name }}"
+          # ------- Optional: current build info (非必須) -------
           VARIANT="${{ needs.build.outputs.variant }}"
           SIGNING="${{ needs.build.outputs.signing }}"
+          APK_NAME_THIS="${{ needs.build.outputs.apk_name }}"
+          AAB_NAME_THIS="${{ needs.build.outputs.aab_name }}"
 
-          # ------- Build correct URLs (prefer specific tag; fallback to latest page) -------
-          if [ -n "${APK_NAME}" ]; then
-            APK_URL="https://github.com/${REPO}/releases/download/${TAG}/${APK_NAME}"
-          else
-            APK_URL="https://github.com/${REPO}/releases/latest"
+          # ------- Require jq -------
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y >/dev/null
+            sudo apt-get install -y jq >/dev/null
           fi
 
-          if [ -n "${AAB_NAME}" ]; then
-            AAB_URL="https://github.com/${REPO}/releases/download/${TAG}/${AAB_NAME}"
+          # ------- Fetch latest (including prerelease, excluding drafts) -------
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+               -H "Accept: application/vnd.github+json" \
+               "https://api.github.com/repos/${REPO}/releases?per_page=10" \
+               -o releases.json
+
+          # 最新の「draft=false」を1件抽出
+          jq -e '[ .[] | select(.draft==false) ][0]' releases.json >/dev/null || {
+            echo "::warning::No non-draft releases found. Falling back to Releases page."
+            LATEST_TAG=""
+            LATEST_APK_NAME=""
+          }
+
+          if [ -z "${LATEST_TAG:-}" ]; then
+            LATEST_TAG=$(jq -r '[ .[] | select(.draft==false) ][0].tag_name // empty' releases.json)
+          fi
+
+          # そのリリースの APK 候補一覧（名前）
+          APK_LIST=$(jq -r '[ .[] | select(.draft==false) ][0].assets[]?.name // empty' releases.json | tr -d '\r')
+          LATEST_APK_NAME=""
+          if [ -n "$APK_LIST" ]; then
+            # 優先度: app-release.apk > /release.*\.apk/i > 任意の *.apk
+            if echo "$APK_LIST" | grep -Fxq 'app-release.apk'; then
+              LATEST_APK_NAME='app-release.apk'
+            elif echo "$APK_LIST" | grep -Eqi 'release.*\.apk$'; then
+              LATEST_APK_NAME=$(echo "$APK_LIST" | grep -Ei 'release.*\.apk$' | head -n1)
+            elif echo "$APK_LIST" | grep -Eq '\.apk$'; then
+              LATEST_APK_NAME=$(echo "$APK_LIST" | grep -E '\.apk$' | head -n1)
+            fi
+          fi
+
+          # URL 組み立て（見つからなければ Releases へフォールバック）
+          if [ -n "${LATEST_TAG}" ] && [ -n "${LATEST_APK_NAME}" ]; then
+            APK_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_APK_NAME}"
+          else
+            APK_URL="https://github.com/${REPO}/releases"
+          fi
+
+          # AAB もあれば同様に（任意）
+          LATEST_AAB_NAME=""
+          if [ -n "$APK_LIST" ]; then
+            if echo "$APK_LIST" | grep -Eq '\.aab$'; then
+              LATEST_AAB_NAME=$(echo "$APK_LIST" | grep -E '\.aab$' | head -n1)
+            fi
+          fi
+          if [ -n "${LATEST_TAG}" ] && [ -n "${LATEST_AAB_NAME}" ]; then
+            AAB_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${LATEST_AAB_NAME}"
           else
             AAB_URL=""
           fi
 
-          # Debug print
-          echo "::group::GH Pages download URLs"
-          echo "TAG        : ${TAG}"
-          echo "APK_NAME   : ${APK_NAME}"
-          echo "AAB_NAME   : ${AAB_NAME}"
-          echo "APK_URL    : ${APK_URL}"
-          if [ -n "${AAB_URL}" ]; then echo "AAB_URL    : ${AAB_URL}"; else echo "AAB_URL    : (none)"; fi
-          echo "VARIANT    : ${VARIANT}"
-          echo "SIGNING    : ${SIGNING}"
+          echo "::group::Resolved latest release asset"
+          echo "LATEST_TAG      : ${LATEST_TAG:-'(none)'}"
+          echo "LATEST_APK_NAME : ${LATEST_APK_NAME:-'(none)'}"
+          echo "LATEST_AAB_NAME : ${LATEST_AAB_NAME:-'(none)'}"
+          echo "APK_URL         : ${APK_URL}"
+          if [ -n "${AAB_URL}" ]; then echo "AAB_URL         : ${AAB_URL}"; fi
           echo "::endgroup::"
 
-          # ------- Render minimal glass UI page -------
+          # ------- Render GH Pages (Glass UI) -------
           mkdir -p gh-pages
           cat > gh-pages/index.html <<HTML
           <!doctype html><html lang="en"><head>
@@ -397,21 +440,34 @@ jobs:
             a{color:#72d0ff;text-decoration:none}
             footer{margin-top:24px;font-size:.85em;opacity:.7;text-align:center}
             .muted{opacity:.8}
+            .row a{display:inline-block;margin-right:10px}
+            code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:6px}
           </style>
           </head>
           <body><div class="wrap"><div class="glass">
-          <p><a href="index.html" target=_self title="Seperate Page">Go to index</a></p>
-          <h1>📦 AndroidSLM — Build ${TAG}</h1>
-          <p class="muted"><strong>Generated:</strong> ${DATE} • <strong>Variant:</strong> ${VARIANT} • <strong>Signing:</strong> ${SIGNING}</p>
+          <p><a href="index.html" target=_self title="Separate Page">Go to index</a></p>
+          <h1>📦 AndroidSLM — Latest Download</h1>
+          <p class="muted"><strong>Generated:</strong> ${DATE}</p>
 
+          <h2>⬇️ Latest Release</h2>
+          <p class="row">
+            <a href="${APK_URL}">APK ${LATEST_APK_NAME:+(<code>${LATEST_APK_NAME}</code>)}</a>
+            ${AAB_URL:+<a href="${AAB_URL}">AAB (<code>${LATEST_AAB_NAME}</code>)</a>}
+          </p>
           <p>
-            <a href="${APK_URL}">⬇️ Download ${APK_NAME:-APK}</a>
-            ${AAB_URL:+ • <a href="${AAB_URL}">Download ${AAB_NAME}</a>}
+            ${LATEST_TAG:+<a href="https://github.com/${REPO}/releases/tag/${LATEST_TAG}">🔖 ${LATEST_TAG}</a> • }
+            <a href="https://github.com/${REPO}/releases">📘 All Releases</a>
           </p>
 
-          <p>
-            <a href="https://github.com/${REPO}/releases/tag/${TAG}">🔖 This Release</a> •
-            <a href="https://github.com/${REPO}/releases">📘 All Releases</a>
+          <hr style="border-color:rgba(255,255,255,.15);margin:24px 0">
+
+          <h2>🧪 This Build (for reference)</h2>
+          <p class="muted">
+            <strong>Tag:</strong> ${TAG_THIS} • <strong>Variant:</strong> ${VARIANT:-n/a} • <strong>Signing:</strong> ${SIGNING:-n/a}
+          </p>
+          <p class="row">
+            ${APK_NAME_THIS:+<a href="https://github.com/${REPO}/releases/download/${TAG_THIS}/${APK_NAME_THIS}">This build APK (<code>${APK_NAME_THIS}</code>)</a>}
+            ${AAB_NAME_THIS:+<a href="https://github.com/${REPO}/releases/download/${TAG_THIS}/${AAB_NAME_THIS}">This build AAB (<code>${AAB_NAME_THIS}</code>)</a>}
           </p>
 
           <p style="margin-top:16px;">
