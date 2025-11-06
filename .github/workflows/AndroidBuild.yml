@@ -275,16 +275,41 @@ jobs:
           echo "repo=$REPO" >> $GITHUB_OUTPUT
           echo "base=$BASE_URL" >> $GITHUB_OUTPUT
 
-      - name: 🌈 Generate Wiki (Home + Build page)
+      - name: 🌈 Generate Wiki (Home + Build page) — No Model
         run: |
           set -e
           TAG="${{ steps.info.outputs.tag }}"
           DATE="${{ steps.info.outputs.date }}"
           REPO="${{ steps.info.outputs.repo }}"
           BASE_URL="${{ steps.info.outputs.base }}"
-          mkdir -p wiki/Builds
 
-          # ---------- Individual build page ----------
+          mkdir -p wiki
+
+          # ==========================================
+          # 🧹 旧 Builds/ 配下のページをルートへマイグレート（1回きり運用想定）
+          #   - wiki/Builds/v1.0-xxx.md → wiki/v1.0-xxx.md
+          #   - 既に同名ファイルがあれば上書きしない
+          # ==========================================
+          if [ -d wiki/Builds ]; then
+            echo "🔄 Migrating legacy wiki/Builds/*.md to wiki/<TAG>.md ..."
+            shopt -s nullglob
+            for f in wiki/Builds/*.md; do
+              base="$(basename "$f")"       # v1.0-xxx.md
+              target="wiki/${base}"
+              if [ -f "$target" ]; then
+                echo "⚠️ Skip existing ${target}"
+              else
+                mv "$f" "$target"
+                echo "➡️ Moved ${f} -> ${target}"
+              fi
+            done
+            shopt -u nullglob
+          fi
+
+          # ==========================================
+          # 📦 Build 個別ページ: wiki/<TAG>.md
+          # URL: https://github.com/<REPO>/wiki/<TAG>
+          # ==========================================
           {
             echo "# 📦 AndroidSLM — Build ${TAG}"
             echo "Generated: ${DATE}"
@@ -292,11 +317,13 @@ jobs:
             echo "## ⬇️ Download"
             echo "- [APK (latest release)](https://github.com/${REPO}/releases/latest/download/app-release.apk)"
             echo "- [Releases](https://github.com/${REPO}/releases)"
-            echo ""
-            echo "> Signing: debug (release variant is debug-signed)"
-          } > "wiki/Builds/${TAG}.md"
+          } > "wiki/${TAG}.md"
 
-          # ---------- Wiki Home ----------
+          # ==========================================
+          # 🏠 Home ページ再生成
+          #   - 対象: wiki 直下の *.md（Home.md 除く）
+          #   - 期待例: wiki/v1.0-aee3b8a.md → /wiki/v1.0-aee3b8a
+          # ==========================================
           {
             echo "# 🏠 AndroidSLM Wiki Home"
             echo "Updated: ${DATE}"
@@ -304,27 +331,25 @@ jobs:
             echo "## 📜 Build History (latest 20)"
           } > wiki/Home.md
 
-          # Build 一覧リンク生成 + デバッグ
           MAP_TMP="wiki/_link-map.txt"
           : > "$MAP_TMP"
 
-          # Home.md 自身以外の .md をビルドページとして扱う（例: wiki/v1.0-xxxx.md）
           LIST=$(find wiki -maxdepth 1 -type f -name '*.md' ! -name 'Home.md' | sort -r | head -n 20 || true)
 
           if [ -z "$LIST" ]; then
             echo "_No builds yet._" >> wiki/Home.md
           else
             echo "$LIST" | while read -r f; do
-              base="$(basename "$f" .md)"  # 例: v1.0-aee3b8a
-              # 念のため slug 正規化（空白や / があっても安全にする）
+              base="$(basename "$f" .md)"    # 例: v1.0-aee3b8a
+              # slug は基本そのまま（タグに空白/スラッシュない前提）
               slug="$(printf '%s' "$base" | sed -E 's@[[:space:]]+@-@g; s@/@-@g; s/-+/-/g')"
               printf -- "- [%s](https://github.com/%s/wiki/%s)\n" "$base" "$REPO" "$slug" >> wiki/Home.md
               printf -- "%s.md -> %s\n" "$base.md" "$slug" >> "$MAP_TMP"
             done
           fi
 
-          echo "" >> wiki/Home.md
           {
+            echo ""
             echo "## 🌐 GH Pages"
             echo "- [Downloads Page](${BASE_URL})"
             echo ""
@@ -332,7 +357,9 @@ jobs:
             echo "<p align='center'><img src='https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${BASE_URL}' width='180'></p>"
           } >> wiki/Home.md
 
-          # デバッグ出力：生成された Wiki 構造とリンクマップ
+          # ==========================================
+          # 🔍 Debug: 生成結果表示
+          # ==========================================
           echo "::group::Wiki tree"
           ls -R wiki || true
           echo "::endgroup::"
@@ -341,19 +368,9 @@ jobs:
           cat "$MAP_TMP" || echo "no build pages"
           echo "::endgroup::"
 
-
-          echo "" >> wiki/Home.md
-          {
-            echo "## 🌐 GH Pages"
-            echo "- [Downloads Page](${BASE_URL})"
-            echo ""
-            echo "## 📱 QR (GH Pages)"
-            echo "<p align='center'><img src='https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${BASE_URL}' width='180'></p>"
-          } >> wiki/Home.md
-
-          echo "::group::Wiki tree"; ls -R wiki || true; echo "::endgroup::"
-          echo "::group::Wiki link map (original -> slug)"; cat "$MAP_TMP" || true; echo "::endgroup::"
-
+          # ==========================================
+          # 🚀 Push Wiki
+          # ==========================================
           cd wiki
           git init
           git config user.name "github-actions"
