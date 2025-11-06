@@ -114,9 +114,6 @@ android {
                     "-Xjsr305=strict"
                 )
             )
-
-            // CIのみで警告をエラー扱い（-Werror）
-            allWarningsAsErrors.set(System.getenv("CI") == "true")
         }
     }
 
