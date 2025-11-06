@@ -71,6 +71,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.negi.androidslm.config.SurveyConfig
 import com.negi.androidslm.config.SurveyConfigLoader
@@ -331,7 +332,22 @@ private fun AiInferenceScreen(
     val aiVm: AiViewModel = viewModel(
         key = "AiViewModel",
         factory = object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = AiViewModel(repo) as T
+
+            override fun <T : ViewModel> create(
+                modelClass: Class<T>,
+                extras: CreationExtras
+            ): T {
+                if (modelClass.isAssignableFrom(AiViewModel::class.java)) {
+                    @Suppress("UNCHECKED_CAST")
+                    return AiViewModel(repo) as T
+                }
+                throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
+            }
+
+            @Deprecated("Use create(modelClass, extras)")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return create(modelClass, CreationExtras.Empty)
+            }
         }
     )
 
