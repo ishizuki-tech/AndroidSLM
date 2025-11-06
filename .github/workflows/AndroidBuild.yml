@@ -451,14 +451,6 @@ jobs:
 
           <hr style="border-color:rgba(255,255,255,.15);margin:24px 0">
 
-          <h2>🧪 This Build</h2>
-          <p class="muted"><strong>Tag:</strong> ${TAG_THIS}</p>
-          <p>
-            <a href="https://github.com/${REPO}/releases/download/${TAG_THIS}/AndroidSLM-${TAG_THIS}.apk">
-              This tag APK (<code>AndroidSLM-${TAG_THIS}.apk</code>)
-            </a>
-          </p>
-
           <p style="margin-top:16px;">
             <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${BASE_URL}" alt="QR">
           </p>
