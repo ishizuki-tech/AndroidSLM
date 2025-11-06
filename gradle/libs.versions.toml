@@ -1,7 +1,7 @@
 # ======================================================================
 # 📦 libs.versions.toml — Final Stable (2025-11-05)
 # ----------------------------------------------------------------------
-# ✅ Works with: Gradle 8.9 | AGP 8.13.0 | Kotlin 2.2.21 | Compose BOM 2025.11.00
+# ✅ Works with: Gradle 8.14 | AGP 8.13.0 | Kotlin 2.2.21 | Compose BOM 2025.11.00
 # ✅ Includes: Compose / Navigation 3 / WorkManager / MediaPipe / LiteRT-LM / Desugaring
 # ======================================================================
 
@@ -13,8 +13,8 @@ composeBom = "2025.11.00"
 
 # --- AndroidX Core ---
 coreKtx = "1.17.0"
-activityKtx = "1.12.0-beta01"
-activityCompose = "1.12.0-beta01"
+activityKtx = "1.12.0-rc01"
+activityCompose = "1.12.0-rc01"
 appcompat = "1.7.1"
 documentfile = "1.1.0"
 
@@ -130,6 +130,6 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 # 🧪 Notes
 # ----------------------------------------------------------------------
 # • Compose BOM defines all androidx.compose.* versions.
-# • Flat alias naming ensures compatibility with Gradle 8.9+ type-safe accessors.
+# • Flat alias naming ensures compatibility with Gradle 8.14 type-safe accessors.
 # • Verified builds: Android Studio AI-252, JVM 17 toolchain, deterministic CI output.
 # ======================================================================

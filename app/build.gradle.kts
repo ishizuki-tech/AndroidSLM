@@ -2,7 +2,7 @@
 // ============================================================
 // ✅ Android Application Build (Compose + Kotlin 2.2.21)
 // ------------------------------------------------------------
-// • Android Studio Koala (AI-252.*) | Gradle 8.13 | AGP 8.13.0
+// • Android Studio Koala (AI-252.*) | Gradle 8.14 | AGP 8.13.0
 // • Compose BOM 2025.10.01 + Material3
 // • MinSdk 26 / TargetSdk 36 / Java 17 toolchain
 // • WorkManager + Orchestrator + MediaPipe Tasks supported

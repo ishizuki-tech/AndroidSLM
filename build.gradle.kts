@@ -3,7 +3,7 @@
 // ✅ Root Build Script — Kotlin DSL + Version Catalog
 // ------------------------------------------------------------
 // • Central plugin management via libs.versions.toml
-// • Compatible with AGP 8.13 / Kotlin 2.2.21 / Gradle 8.13
+// • Compatible with AGP 8.13 / Kotlin 2.2.21 / Gradle 8.14
 // • Enforces JDK 17 toolchain across modules
 // • Local-friendly logging, CI-safe behavior
 // ============================================================
@@ -121,7 +121,7 @@ gradle.projectsEvaluated {
 // ------------------------------------------------------------
 // 🧩 Kotlin:      2.2.21
 // 🧩 AGP:         8.13
-// 🧩 Gradle:      8.13
+// 🧩 Gradle:      8.14
 // 🧩 JDK:         17 (toolchain-enforced)
 // 🧩 Tests:       JUnit 5 enabled globally
 // 🧩 Cache:       Controlled via settings.gradle.kts
@@ -130,5 +130,5 @@ gradle.projectsEvaluated {
 // ============================================================
 // 🧱 End of Root Build Script
 // ------------------------------------------------------------
-// ✅ Debugged & Verified for Gradle 8.13 / Kotlin 2.2.21 / AGP 8.13
+// ✅ Debugged & Verified for Gradle 8.14 / Kotlin 2.2.21 / AGP 8.13
 // ============================================================
