@@ -284,6 +284,7 @@ jobs:
           BASE_URL="${{ steps.info.outputs.base }}"
           mkdir -p wiki/Builds
 
+          # ---------- Individual build page ----------
           {
             echo "# 📦 AndroidSLM — Build ${TAG}"
             echo "Generated: ${DATE}"
@@ -295,6 +296,7 @@ jobs:
             echo "> Signing: debug (release variant is debug-signed)"
           } > "wiki/Builds/${TAG}.md"
 
+          # ---------- Wiki Home ----------
           {
             echo "# 🏠 AndroidSLM Wiki Home"
             echo "Updated: ${DATE}"
@@ -304,12 +306,14 @@ jobs:
 
           MAP_TMP="wiki/_link-map.txt"; : > "$MAP_TMP"
           LIST=$(find wiki/Builds -type f -name '*.md' | sort -r | head -n 20 || true)
+
           if [ -z "$LIST" ]; then
             echo "_No builds yet._" >> wiki/Home.md
           else
             echo "$LIST" | while read -r f; do
-              rel="${f#wiki/}"; name="${rel%.md}"
-              slug="$(printf '%s' "$name" | sed -E 's/[[:space:]]+/-/g; s@/@-@g; s/-+/-/g')"
+              rel="${f#wiki/}"                # → "Builds/v1.0-xxx.md"
+              name="${rel%.md}"              # → "Builds/v1.0-xxx"
+              slug="$(printf '%s' "$name" | sed -E 's@[[:space:]]+@-@g; s@/@-@g; s/-+/-/g')"  # → "Builds-v1.0-xxx"
               printf -- "- [%s](https://github.com/%s/wiki/%s)\n" "$name" "$REPO" "$slug" >> wiki/Home.md
               printf -- "%s -> %s\n" "$name" "$slug" >> "$MAP_TMP"
             done
